@@ -8,6 +8,7 @@ const { EventDispatcher, CreateOrderEvent, UpdatedOrderEvent, CancelOrderEvent, 
 const { SimpleOrder, Bucket } = require('./src/order');
 const { SimpleOrderBook } = require('./src/orderBook');
 const { PersistentOrder, PersistentOrderBook } = require('./src/persistence');
+const { EngineOrchestrator } = require('./src/orchestrator');
 
 module.exports = {
   // constants
@@ -28,5 +29,6 @@ module.exports = {
   Bucket,
   SimpleOrderBook,
   PersistentOrder,
-  PersistentOrderBook
+  PersistentOrderBook,
+  EngineOrchestrator
 };

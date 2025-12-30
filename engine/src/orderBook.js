@@ -370,8 +370,17 @@ class SimpleOrderBook {
         }
       });
 
+    this.lastOrder = persistentOrderBook.lastOrder
+      ? this.orders.get(persistentOrderBook.lastOrder.id) || null
+      : null;
+
     this.stopReplayMode();
     this.publishOrderBook();
+  }
+
+  rebuildFromJSON(json) {
+    const persistent = this.persistent().constructor.fromJSON(json);
+    this.rebuild(persistent);
   }
 }
 

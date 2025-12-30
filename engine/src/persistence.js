@@ -12,6 +12,24 @@ class PersistentOrder {
     this.direction = order.direction;
     this.filledQuantity = order.filledQuantity;
   }
+
+  toJSON() {
+    return {
+      id: this.id,
+      ouid: this.ouid,
+      uuid: this.uuid,
+      price: this.price,
+      quantity: this.quantity,
+      matchConstraint: this.matchConstraint,
+      orderType: this.orderType,
+      direction: this.direction,
+      filledQuantity: this.filledQuantity
+    };
+  }
+
+  static fromJSON(json) {
+    return new PersistentOrder(json);
+  }
 }
 
 class PersistentOrderBook {
@@ -20,6 +38,24 @@ class PersistentOrderBook {
     this.lastOrder = lastOrder;
     this.tradeCounter = tradeCounter;
     this.orders = orders.map((order) => new PersistentOrder(order));
+  }
+
+  toJSON() {
+    return {
+      pair: this.pair,
+      lastOrder: this.lastOrder,
+      tradeCounter: this.tradeCounter,
+      orders: this.orders.map((order) => order.toJSON())
+    };
+  }
+
+  static fromJSON(json) {
+    return new PersistentOrderBook({
+      pair: json.pair,
+      lastOrder: json.lastOrder,
+      tradeCounter: json.tradeCounter,
+      orders: (json.orders || []).map((order) => PersistentOrder.fromJSON(order))
+    });
   }
 
   rebuildOrder(order) {
