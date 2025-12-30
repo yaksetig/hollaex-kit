@@ -78,40 +78,6 @@ For an easier way to connect to the websocket, use the [HollaEx Node Library](ht
 
 ### Usage
 
-## Private exchange network gateway
-
-The `server/services/network-gateway.js` helper wraps `hollaex-network-lib` so the Kit can forward authenticated REST and websocket calls to the HollaEx Network.
-
-### Features
-
-- Initializes the network client with `apiKey`, `apiSecret`, `activation_code`, and optional `exchange_id`.
-- Provides `proxy` helpers for private REST functions like `createOrder`, `cancelOrder`, `mintAsset`, `burnAsset`, `performWithdrawal`, and balance lookups.
-- Manages websocket connectivity with automatic reconnection and helpers to subscribe/unsubscribe to private channels (`order:<userId>` and `wallet:<userId>`).
-- Emits websocket lifecycle events (`ws:open`, `ws:close`, `ws:error`, `ws:message`) that can be bridged to your own websocket hub.
-
-### Quick start
-
-```js
-const NetworkGateway = require('./services/network-gateway');
-
-const gateway = new NetworkGateway({
-  apiKey: process.env.HOLLAEX_NETWORK_KEY,
-  apiSecret: process.env.HOLLAEX_NETWORK_SECRET,
-  activation_code: process.env.HOLLAEX_ACTIVATION_CODE,
-  exchange_id: process.env.HOLLAEX_EXCHANGE_ID,
-  additionalHeaders: { 'x-forwarded-for': '127.0.0.1' }
-});
-
-await gateway.init();
-await gateway.connectWebsocket();
-gateway.subscribePrivateChannels({ userId: 1 });
-
-// forward REST to the network
-await gateway.createOrder(1, { symbol: 'xht-usdt', side: 'buy', size: 1, type: 'limit', price: 0.1 });
-```
-
-Integrate the emitted events into your websocket hub to fan-out private updates to UI subscribers while keeping network authentication in one place.
-
 #### Connecting
 Connect to the websocket through the endpoint `(API_URL)/stream`.
 

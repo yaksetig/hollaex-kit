@@ -33,31 +33,3 @@ book.submitOrder({
 ```
 
 The dispatcher delivers domain events as plain objects, letting callers persist trades, broadcast websocket updates, or reject invalid commands. See inline comments for behaviour aligned with the supplied specification.
-
-## Network and persistence gateway
-
-Use `EngineGateway` to pair the bare matching engine with persistence and network fan-out. The helper wires the `SimpleOrderBook` dispatcher into any listener (such as the network gateway described in the server docs) and optionally persists snapshots.
-
-```js
-const { EngineGateway, MATCH_CONSTRAINTS } = require('./engine');
-const NetworkGateway = require('../server/services/network-gateway');
-
-const network = new NetworkGateway({ apiKey, apiSecret, activation_code });
-await network.init();
-
-const engine = new EngineGateway({
-  symbol: 'xht-usdt',
-  matchConstraint: MATCH_CONSTRAINTS.GTC,
-  pricePrecision: 4,
-  amountPrecision: 4,
-  networkGateway: network,
-  persistenceAdapter: myAdapter // optional
-});
-
-await engine.restore();
-engine.attachNetworkObservers();
-
-await engine.submit({ id: '1', side: 'buy', price: 0.1, size: 1, type: 'limit' });
-```
-
-The gateway keeps snapshots updated when a persistence adapter is provided and re-emits engine events under `engine:*` names for downstream consumers to relay to the private exchange network.
