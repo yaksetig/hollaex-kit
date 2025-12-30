@@ -1,0 +1,12 @@
+{
+  "name": "hollaex-engine",
+  "version": "0.0.1",
+  "description": "Standalone matching engine components for HollaEx Kit.",
+  "main": "index.js",
+  "license": "MIT",
+  "type": "commonjs",
+  "scripts": {
+    "lint": "echo \"No lint configured\"",
+    "test": "echo \"No tests yet\""
+  }
+}
