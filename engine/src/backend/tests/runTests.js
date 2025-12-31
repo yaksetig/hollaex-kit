@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { DataStore } = require('../data-store');
 const { toAtomic, toDisplay } = require('../amounts');
+const { requirePermission } = require('../auth');
 
 const store = new DataStore();
 
@@ -77,5 +78,33 @@ const trade = store.recordTrade({ symbol: 'xht-usdt', side: 'buy', price: 12, si
 assert.ok(trade.id, 'Trades should generate ids');
 
 assert.strictEqual(toDisplay(toAtomic('1')), '1.00000000', 'Fixed point conversion should round-trip');
+
+const req = { auth: { permissions: ['read'] } };
+const res = {
+  statusCode: null,
+  payload: null,
+  status(code) {
+    this.statusCode = code;
+    return this;
+  },
+  json(data) {
+    this.payload = data;
+    return this;
+  },
+};
+
+requirePermission('trade')(req, res, () => {
+  res.calledNext = true;
+});
+assert.strictEqual(res.statusCode, 403, 'Trade permission should be required when missing');
+assert.deepStrictEqual(res.payload, { message: 'Forbidden' }, 'Forbidden message should be returned');
+
+const reqWithPermission = { auth: { permissions: ['trade'] } };
+const permittedRes = { status() { return this; }, json() { return this; } };
+let nextCalled = false;
+requirePermission('trade')(reqWithPermission, permittedRes, () => {
+  nextCalled = true;
+});
+assert.ok(nextCalled, 'Middleware should allow access when trade permission is present');
 
 console.log('All deterministic backend tests passed');

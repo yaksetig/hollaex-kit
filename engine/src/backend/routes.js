@@ -429,7 +429,7 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(result);
   });
 
-  router.post('/network/:exchange_id/withdrawal', requireAuth, async (req, res) => {
+  router.post('/network/:exchange_id/withdrawal', requireAuth, requirePermission('trade'), async (req, res) => {
     const { user_id, address, currency, amount, network } = { ...req.query, ...req.body };
     if (!user_id || !address || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
 
