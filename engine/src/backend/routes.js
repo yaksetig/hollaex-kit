@@ -195,13 +195,21 @@ const buildRoutes = (store, hub, walletService) => {
 
   router.get('/network/:exchange_id/balance', requireAuth, requirePermission('read'), (req, res) => {
     const { user_id } = req.query;
-    if (user_id) {
-      return res.json(store.getWalletSummary(user_id));
+    const targetUser = user_id || req.auth.userId;
+
+    if (!targetUser) return res.status(400).json({ message: 'user_id is required' });
+    if (targetUser !== req.auth.userId && !hasPermission(req.auth, 'manage_api_keys')) {
+      return res.status(403).json({ message: 'Forbidden' });
     }
+
+    if (user_id) {
+      return res.json(store.getWalletSummary(targetUser));
+    }
+
     const response = {};
     config.assets.forEach((asset) => {
-      response[`${asset}_balance`] = toDisplay(store.getBalance('1', asset)?.total || 0);
-      response[`${asset}_available`] = toDisplay(store.getBalance('1', asset)?.available || 0);
+      response[`${asset}_balance`] = toDisplay(store.getBalance(targetUser, asset)?.total || 0);
+      response[`${asset}_available`] = toDisplay(store.getBalance(targetUser, asset)?.available || 0);
     });
     response.updated_at = new Date().toISOString();
     res.json(response);
