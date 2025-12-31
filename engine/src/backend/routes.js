@@ -31,6 +31,14 @@ const buildRoutes = (store, hub, walletService) => {
   const router = express.Router();
   const ledger = new Ledger(store);
 
+  const resolveSingleStatusAction = (flags = {}) => {
+    const enabled = Object.entries(flags).filter(([, value]) => value);
+    if (enabled.length > 1) {
+      throw new Error('Can only update one parameter');
+    }
+    return enabled.length ? enabled[0][0] : null;
+  };
+
   router.get('/network/init/:activation_code', (req, res) => {
     const activation = credentialStore.validateActivationCode(req.params.activation_code, config.exchange.id);
     if (!activation) {
@@ -266,9 +274,15 @@ const buildRoutes = (store, hub, walletService) => {
   });
 
   router.post('/network/:exchange_id/mint', requireAuth, requirePermission('admin'), (req, res) => {
-    const { user_id, currency, amount } = req.body;
+    const { user_id, currency, amount, status = true, transaction_id, description, address, fee } = req.body || {};
     if (!user_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
+
     try {
+      if (status === false) {
+        const pending = store.createPendingMint({ user_id, currency, amount, transaction_id, description, address, fee });
+        return res.status(201).json(pending);
+      }
+
       const entry = ledger.recordEntry({ user_id, currency, change: amount, reference: 'mint' });
       hub.publishWallet(user_id);
       res.status(201).json(entry);
@@ -277,16 +291,124 @@ const buildRoutes = (store, hub, walletService) => {
     }
   });
 
-  router.post('/network/:exchange_id/burn', requireAuth, requirePermission('admin'), (req, res) => {
-    const { user_id, currency, amount } = req.body;
-    if (!user_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
+  router.put('/network/:exchange_id/mint', requireAuth, requirePermission('admin'), (req, res) => {
+    const {
+      transaction_id,
+      status,
+      dismissed,
+      rejected,
+      processing,
+      waiting,
+      onhold,
+      updated_transaction_id,
+      updated_address,
+      updated_description,
+    } = req.body || {};
+
+    if (!transaction_id) return res.status(400).json({ message: 'transaction_id is required' });
+
     try {
+      resolveSingleStatusAction({ status, dismissed, rejected, processing, waiting, onhold });
+    } catch (error) {
+      return res.status(400).json({ message: error.message });
+    }
+
+    const mint = store.updatePendingMint(transaction_id, {
+      id: updated_transaction_id || transaction_id,
+      address: updated_address,
+      description: updated_description,
+    });
+
+    if (!mint) return res.status(404).json({ message: 'pending mint not found' });
+
+    if (status) {
+      try {
+        const entry = ledger.recordEntry({ user_id: mint.user_id, currency: mint.currency, change: mint.amount, reference: 'mint' });
+        store.updatePendingMint(transaction_id, { status: 'confirmed' });
+        hub.publishWallet(mint.user_id);
+        return res.json(entry);
+      } catch (error) {
+        return res.status(400).json({ message: error.message });
+      }
+    }
+
+    if (dismissed) store.updatePendingMint(transaction_id, { status: 'dismissed' });
+    if (rejected) store.updatePendingMint(transaction_id, { status: 'rejected' });
+    if (processing) store.updatePendingMint(transaction_id, { status: 'processing' });
+    if (waiting) store.updatePendingMint(transaction_id, { status: 'waiting' });
+    if (onhold) store.updatePendingMint(transaction_id, { status: 'onhold' });
+
+    const updated = store.updatePendingMint(transaction_id, {});
+    res.json(updated);
+  });
+
+  router.post('/network/:exchange_id/burn', requireAuth, requirePermission('admin'), (req, res) => {
+    const { user_id, currency, amount, status = true, transaction_id, description, address, fee } = req.body || {};
+    if (!user_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
+
+    try {
+      if (status === false) {
+        const pending = store.createPendingBurn({ user_id, currency, amount, transaction_id, description, address, fee });
+        return res.status(201).json(pending);
+      }
+
       const entry = ledger.recordEntry({ user_id, currency, change: `-${amount}`, reference: 'burn' });
       hub.publishWallet(user_id);
       res.status(201).json(entry);
     } catch (error) {
       res.status(400).json({ message: error.message });
     }
+  });
+
+  router.put('/network/:exchange_id/burn', requireAuth, requirePermission('admin'), (req, res) => {
+    const {
+      transaction_id,
+      status,
+      dismissed,
+      rejected,
+      processing,
+      waiting,
+      onhold,
+      updated_transaction_id,
+      updated_address,
+      updated_description,
+    } = req.body || {};
+
+    if (!transaction_id) return res.status(400).json({ message: 'transaction_id is required' });
+
+    try {
+      resolveSingleStatusAction({ status, dismissed, rejected, processing, waiting, onhold });
+    } catch (error) {
+      return res.status(400).json({ message: error.message });
+    }
+
+    const burn = store.updatePendingBurn(transaction_id, {
+      id: updated_transaction_id || transaction_id,
+      address: updated_address,
+      description: updated_description,
+    });
+
+    if (!burn) return res.status(404).json({ message: 'pending burn not found' });
+
+    if (status) {
+      try {
+        const entry = ledger.recordEntry({ user_id: burn.user_id, currency: burn.currency, change: `-${burn.amount}`, reference: 'burn' });
+        store.updatePendingBurn(transaction_id, { status: 'confirmed' });
+        hub.publishWallet(burn.user_id);
+        return res.json(entry);
+      } catch (error) {
+        return res.status(400).json({ message: error.message });
+      }
+    }
+
+    if (dismissed) store.updatePendingBurn(transaction_id, { status: 'dismissed' });
+    if (rejected) store.updatePendingBurn(transaction_id, { status: 'rejected' });
+    if (processing) store.updatePendingBurn(transaction_id, { status: 'processing' });
+    if (waiting) store.updatePendingBurn(transaction_id, { status: 'waiting' });
+    if (onhold) store.updatePendingBurn(transaction_id, { status: 'onhold' });
+
+    const updated = store.updatePendingBurn(transaction_id, {});
+    res.json(updated);
   });
 
   router.get('/network/:exchange_id/fees', requireAuth, requirePermission('read'), (req, res) => {
@@ -368,27 +490,39 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(store.listPublicTrades(req.query.symbol));
   });
 
-  router.get('/check-transaction', (req, res) => {
-    const { transaction_id } = req.query;
-    const deposit = store.findDepositByTx(transaction_id);
-    const withdrawal = store.withdrawals.find((item) => item.tx_hash === transaction_id);
+  const handleCheckTransaction = (req, res) => {
+    const { currency, transaction_id, address, network } = req.query;
+    if (!currency || !transaction_id || !address || !network) {
+      return res.status(400).json({ message: 'currency, transaction_id, address, and network are required' });
+    }
 
-    if (!deposit && !withdrawal) {
+    const deposit = store.findDepositByTx(transaction_id);
+    const withdrawal = store.withdrawals.find(
+      (item) => item.tx_hash === transaction_id || item.id === transaction_id
+    );
+
+    const match = [deposit, withdrawal].find(
+      (tx) => tx && tx.currency === currency && tx.address === address && tx.network === network
+    );
+
+    if (!match) {
       return res.status(404).json({ message: 'transaction not found' });
     }
 
-    const tx = deposit || withdrawal;
     res.json({
-      currency: tx.currency,
-      transaction_id: transaction_id || tx.id,
-      address: tx.address,
-      network: tx.network,
-      confirmed: tx.status === 'completed',
-      confirmations: tx.confirmations,
-      confirmation_required: tx.confirmation_required,
-      reconciliation_state: tx.reconciliation_state,
+      currency: match.currency,
+      transaction_id: transaction_id || match.id,
+      address: match.address,
+      network: match.network,
+      confirmed: match.status === 'completed',
+      confirmations: match.confirmations,
+      confirmation_required: match.confirmation_required,
+      reconciliation_state: match.reconciliation_state,
     });
-  });
+  };
+
+  router.get('/check-transaction', handleCheckTransaction);
+  router.get('/network/:exchange_id/check-transaction', handleCheckTransaction);
 
   router.post('/network/:exchange_id/create-address', requireAuth, async (req, res) => {
     const { user_id, crypto, network } = { ...req.query, ...req.body };
@@ -416,6 +550,40 @@ const buildRoutes = (store, hub, walletService) => {
     } catch (error) {
       res.status(400).json({ message: error.message });
     }
+  });
+
+  router.get('/oracle/prices', (req, res) => {
+    const { assets, quote = 'usdt', amount = 1 } = req.query;
+    if (!assets) return res.status(400).json({ message: 'assets are required' });
+
+    const assetList = String(assets)
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const amountNum = Number(amount) || 0;
+    if (amountNum <= 0) return res.status(400).json({ message: 'amount must be greater than 0' });
+
+    const prices = {};
+
+    assetList.forEach((asset) => {
+      if (asset === quote) {
+        prices[asset] = amountNum;
+        return;
+      }
+
+      const directPair = `${asset}-${quote}`;
+      const inversePair = `${quote}-${asset}`;
+      if (store.tickers[directPair]?.last) {
+        prices[asset] = Number(store.tickers[directPair].last) * amountNum;
+      } else if (store.tickers[inversePair]?.last) {
+        prices[asset] = amountNum / Number(store.tickers[inversePair].last);
+      } else {
+        prices[asset] = 0;
+      }
+    });
+
+    res.json(prices);
   });
 
   return router;

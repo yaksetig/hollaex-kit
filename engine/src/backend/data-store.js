@@ -29,6 +29,8 @@ class DataStore {
     this.deposits = [];
     this.withdrawals = [];
     this.addresses = [];
+    this.pendingMints = [];
+    this.pendingBurns = [];
     this.idempotency = new Map();
     this.ledger = new Ledger(this);
 
@@ -47,6 +49,76 @@ class DataStore {
     });
 
     this.seedMarketData();
+  }
+
+  createPendingMint(payload) {
+    const mint = {
+      id: payload.transaction_id || uuidv4(),
+      user_id: String(payload.user_id),
+      currency: payload.currency,
+      amount: payload.amount,
+      address: payload.address,
+      description: payload.description,
+      fee: payload.fee,
+      status: 'pending',
+      dismissed: false,
+      rejected: false,
+      processing: false,
+      waiting: false,
+      onhold: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    this.pendingMints.push(mint);
+    return mint;
+  }
+
+  updatePendingMint(transactionId, patch = {}) {
+    const mint = this.pendingMints.find((entry) => entry.id === transactionId || entry.previous_id === transactionId);
+    if (!mint) return null;
+
+    if (patch.id && patch.id !== mint.id) {
+      mint.previous_id = mint.previous_id || mint.id;
+    }
+
+    Object.assign(mint, patch, { updated_at: new Date().toISOString() });
+    return mint;
+  }
+
+  createPendingBurn(payload) {
+    const burn = {
+      id: payload.transaction_id || uuidv4(),
+      user_id: String(payload.user_id),
+      currency: payload.currency,
+      amount: payload.amount,
+      address: payload.address,
+      description: payload.description,
+      fee: payload.fee,
+      status: 'pending',
+      dismissed: false,
+      rejected: false,
+      processing: false,
+      waiting: false,
+      onhold: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    this.pendingBurns.push(burn);
+    return burn;
+  }
+
+  updatePendingBurn(transactionId, patch = {}) {
+    const burn = this.pendingBurns.find((entry) => entry.id === transactionId || entry.previous_id === transactionId);
+    if (!burn) return null;
+
+    if (patch.id && patch.id !== burn.id) {
+      burn.previous_id = burn.previous_id || burn.id;
+    }
+
+    Object.assign(burn, patch, { updated_at: new Date().toISOString() });
+    return burn;
   }
 
   async loadFromDatabase() {
