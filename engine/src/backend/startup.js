@@ -34,7 +34,7 @@ const seedAdmin = async (pool) => {
 };
 
 const initialize = async () => {
-  const pool = createPool(config.database);
+  const pool = createPool(config.db);
   await verifyConnectivity(pool);
   await runMigrations(pool, config.paths.migrationsDir);
   await seedAdmin(pool);
