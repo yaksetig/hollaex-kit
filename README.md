@@ -26,6 +26,57 @@ Check out [HollaEx Network Library](https://github.com/hollaex/hollaex-kit/tree/
 
 Check out [HollaEx Tools Library](https://github.com/hollaex/hollaex-kit/tree/master/server/utils/hollaex-tools-lib) for developers as a suite of all useful functions in the HollaEx Kit.
 
+## Run locally
+
+You can run the HollaEx Kit locally with Docker for the backend and the React development server for the frontend.
+
+### Prerequisites
+
+- Docker Engine and Docker Compose v2
+- Node.js (LTS) and npm
+
+### Backend
+
+1. Copy the local environment template and set the values you need (admin credentials, captcha keys, etc.).
+
+   ```bash
+   cp server/tools/hollaex-kit.env.local.example server/tools/hollaex-kit.env.local
+   ```
+
+2. Start the API, Postgres, and Redis stack in development mode.
+
+   ```bash
+   cd server
+   docker compose -f docker-compose.yaml up --build
+   ```
+
+   The API will be available directly on `http://localhost:10010` and through the NGINX proxy on `http://localhost/api`; websocket traffic is proxied on `ws://localhost/stream`.
+
+### Frontend
+
+1. Create a local environment file for the web client that points to the locally running backend.
+
+   ```bash
+   cd web
+   cp .env .env.local
+   cat <<'EOF' > .env.local
+   REACT_APP_PUBLIC_URL=http://localhost:3000
+   REACT_APP_SERVER_ENDPOINT=http://localhost/api
+   REACT_APP_STREAM_ENDPOINT=ws://localhost/stream
+   REACT_APP_NETWORK=testnet
+   REACT_APP_EXCHANGE_NAME="hollaex-kit-local"
+   EOF
+   ```
+
+2. Install dependencies and start the development server.
+
+   ```bash
+   npm install
+   npm run start
+   ```
+
+   The React app will be served on `http://localhost:3000` and communicate with the locally running backend.
+
 ## Community
 Join us on the [Forum](https://forum.hollaex.com), [Discord](https://discord.gg/RkRHU8RbyM) and [Twitter](http://www.twitter.com/hollaex).
 
