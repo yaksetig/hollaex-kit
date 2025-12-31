@@ -25,6 +25,7 @@ const buildServer = async () => {
 
   const store = new DataStore(db);
   await store.initialize();
+  const walletService = new WalletService(store);
   const server = http.createServer(app);
   const websocketHub = new WebsocketHub(server, store);
 
