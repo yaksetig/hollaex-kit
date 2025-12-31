@@ -1,5 +1,7 @@
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const config = require('./config');
+const { credentialStore } = require('./credential-store');
 
 const headerName = (req, name) => req.headers[name.toLowerCase()];
 
@@ -15,22 +17,41 @@ const createSignature = (secret, verb, path, expires, data = '') => {
   return crypto.createHmac('sha256', secret).update(verb + path + expires + stringData).digest('hex');
 };
 
+const issueJwt = (userId, permissions = config.auth.defaultKeyPermissions) =>
+  jwt.sign({ sub: String(userId), permissions, exchange: config.exchange.id }, config.auth.jwtSecret, {
+    expiresIn: config.auth.jwtTtl,
+  });
+
+const parseJwt = (token) => {
+  try {
+    return jwt.verify(token, config.auth.jwtSecret);
+  } catch (error) {
+    return null;
+  }
+};
+
+const hasPermission = (auth, permission) => (auth?.permissions || []).includes(permission);
+
 const authenticateRequest = (req) => {
+  const bearer = headerName(req, 'authorization');
   const apiKey = headerName(req, 'api-key');
   const signature = headerName(req, 'api-signature');
   const expires = headerName(req, 'api-expires') || headerName(req, 'api-expiry');
   const timestamp = headerName(req, 'api-timestamp');
-  const devToken = headerName(req, 'x-dev-token') || headerName(req, 'authorization');
 
-  if (devToken && config.auth.devTokens.includes(devToken)) {
-    return { mode: 'dev-token', userId: headerName(req, 'x-user-id') || config.auth.apiKeys[apiKey]?.userId || '1' };
+  if (bearer && bearer.toLowerCase().startsWith('bearer ')) {
+    const token = bearer.slice(7);
+    const payload = parseJwt(token);
+    if (payload && payload.exchange === config.exchange.id) {
+      return { mode: 'jwt', userId: payload.sub, permissions: payload.permissions || [] };
+    }
   }
 
   if (!apiKey || !signature || !expires) {
     return null;
   }
 
-  const record = config.auth.apiKeys[apiKey];
+  const record = credentialStore.getActiveKey(apiKey);
   if (!record) return null;
 
   const expiresInt = parseInt(expires, 10);
@@ -45,14 +66,13 @@ const authenticateRequest = (req) => {
   const body = req.rawBody || '';
   const computed = createSignature(record.secret, req.method.toUpperCase(), path, expires, body);
   if (timingSafeEqual(computed, signature)) {
-    return { mode: 'hmac', userId: record.userId };
+    return { mode: 'hmac', userId: record.userId, permissions: record.permissions || [] };
   }
 
-  // allow timestamp header fallback per prompt
   if (timestamp) {
     const computedWithTs = createSignature(record.secret, req.method.toUpperCase(), path, timestamp, body);
     if (timingSafeEqual(computedWithTs, signature)) {
-      return { mode: 'hmac', userId: record.userId };
+      return { mode: 'hmac', userId: record.userId, permissions: record.permissions || [] };
     }
   }
 
@@ -71,8 +91,21 @@ const requireAuth = (req, res, next) => {
   next();
 };
 
+const requirePermission = (permission) => (req, res, next) => {
+  if (!req.auth) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  if (!hasPermission(req.auth, permission)) {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+  next();
+};
+
 module.exports = {
   authMiddleware,
   requireAuth,
   authenticateRequest,
+  requirePermission,
+  hasPermission,
+  issueJwt,
 };

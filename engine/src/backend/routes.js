@@ -1,8 +1,9 @@
 const express = require('express');
-const { requireAuth } = require('./auth');
+const { requireAuth, requirePermission, hasPermission, issueJwt } = require('./auth');
 const config = require('./config');
 const { Ledger } = require('./ledger');
 const { toDisplay, toAtomic } = require('./amounts');
+const { credentialStore } = require('./credential-store');
 
 const buildUdfConfig = () => ({
   supported_resolutions: ['1m', '5m', '1h', '1d'],
@@ -31,10 +32,11 @@ const buildRoutes = (store, hub, walletService) => {
   const ledger = new Ledger(store);
 
   router.get('/network/init/:activation_code', (req, res) => {
-    if (req.params.activation_code !== config.exchange.activationCode) {
+    const activation = credentialStore.validateActivationCode(req.params.activation_code, config.exchange.id);
+    if (!activation) {
       return res.status(404).json({ message: 'Unknown activation code' });
     }
-    res.json(store.exchange);
+    res.json({ ...store.exchange, activation_token: issueJwt(config.exchange.id, ['exchange:init']) });
   });
 
   router.get('/network/:exchange_id/constants', (req, res) => {
@@ -48,6 +50,43 @@ const buildRoutes = (store, hub, walletService) => {
 
   router.get('/network/:exchange_id/exchange', (req, res) => {
     res.json({ ...store.exchange });
+  });
+
+  router.get('/network/:exchange_id/api-keys', requireAuth, (req, res) => {
+    const { user_id } = req.query;
+    const targetUser = user_id || req.auth.userId;
+    if (targetUser !== req.auth.userId && !hasPermission(req.auth, 'manage_api_keys')) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    const keys = credentialStore
+      .listKeys(targetUser)
+      .map(({ apiKey, permissions, createdAt, revokedAt }) => ({ api_key: apiKey, permissions, created_at: createdAt, revoked_at: revokedAt }));
+    res.json({ count: keys.length, data: keys });
+  });
+
+  router.post('/network/:exchange_id/api-keys', requireAuth, (req, res) => {
+    const { user_id, permissions } = req.body || {};
+    const targetUser = user_id || req.auth.userId;
+    if (targetUser !== req.auth.userId && !hasPermission(req.auth, 'manage_api_keys')) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    const created = credentialStore.createApiKey({ userId: targetUser, permissions });
+    res.status(201).json({
+      api_key: created.apiKey,
+      api_secret: created.secret,
+      permissions: created.permissions,
+      created_at: created.createdAt,
+    });
+  });
+
+  router.delete('/network/:exchange_id/api-keys/:api_key', requireAuth, (req, res) => {
+    const targetKey = credentialStore.getActiveKey(req.params.api_key);
+    if (!targetKey) return res.status(404).json({ message: 'API key not found' });
+    if (targetKey.userId !== req.auth.userId && !hasPermission(req.auth, 'manage_api_keys')) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    const revoked = credentialStore.revokeKey(req.params.api_key);
+    res.json({ api_key: revoked.apiKey, revoked_at: revoked.revokedAt });
   });
 
   router.get('/network/:exchange_id/ticker', (req, res) => {
@@ -126,7 +165,7 @@ const buildRoutes = (store, hub, walletService) => {
     }
   });
 
-  router.get('/network/:exchange_id/user', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/user', requireAuth, requirePermission('read'), (req, res) => {
     const { user_id } = req.query;
     if (!user_id) return res.status(400).json({ message: 'user_id is required' });
     const user = store.getUser(user_id);
@@ -134,19 +173,19 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(user);
   });
 
-  router.get('/network/:exchange_id/users', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/users', requireAuth, requirePermission('read'), (req, res) => {
     const data = store.listUsers();
     res.json({ count: data.length, data });
   });
 
-  router.post('/network/:exchange_id/signup', requireAuth, (req, res) => {
+  router.post('/network/:exchange_id/signup', requireAuth, requirePermission('write'), (req, res) => {
     const { email } = req.body || {};
     if (!email) return res.status(400).json({ message: 'email is required' });
     const user = store.createUser(email);
     res.status(201).json(user);
   });
 
-  router.get('/network/:exchange_id/balance', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/balance', requireAuth, requirePermission('read'), (req, res) => {
     const { user_id } = req.query;
     if (user_id) {
       return res.json(store.getWalletSummary(user_id));
@@ -160,13 +199,13 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(response);
   });
 
-  router.get('/network/:exchange_id/balances', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/balances', requireAuth, requirePermission('read'), (req, res) => {
     const { user_id } = req.query;
     if (!user_id) return res.status(400).json({ message: 'user_id is required' });
     res.json({ data: [store.getWalletSummary(user_id)], count: 1 });
   });
 
-  router.get('/network/:exchange_id/orders', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/orders', requireAuth, requirePermission('read'), (req, res) => {
     const { symbol, side, status, user_id, limit, page } = req.query;
     const result = store.listOrders({ symbol, side, status, user_id });
     const pageNum = Number(page) || 1;
@@ -176,7 +215,7 @@ const buildRoutes = (store, hub, walletService) => {
     res.json({ count: result.count, data, page: pageNum, limit: limitNum });
   });
 
-  router.get('/network/:exchange_id/order', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/order', requireAuth, requirePermission('read'), (req, res) => {
     const { user_id, order_id } = req.query;
     if (!user_id || !order_id) return res.status(400).json({ message: 'user_id and order_id are required' });
     const order = store.getOrder(user_id, order_id);
@@ -184,7 +223,7 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(order);
   });
 
-  router.post('/network/:exchange_id/order', requireAuth, (req, res) => {
+  router.post('/network/:exchange_id/order', requireAuth, requirePermission('trade'), (req, res) => {
     const { user_id } = req.query;
     if (!user_id) return res.status(400).json({ message: 'user_id is required' });
     try {
@@ -197,7 +236,7 @@ const buildRoutes = (store, hub, walletService) => {
     }
   });
 
-  router.delete('/network/:exchange_id/order', requireAuth, (req, res) => {
+  router.delete('/network/:exchange_id/order', requireAuth, requirePermission('trade'), (req, res) => {
     const { user_id, order_id } = req.query;
     if (!user_id || !order_id) return res.status(400).json({ message: 'user_id and order_id are required' });
     const order = store.cancelOrder(user_id, order_id);
@@ -207,7 +246,7 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(order);
   });
 
-  router.delete('/network/:exchange_id/order/all', requireAuth, (req, res) => {
+  router.delete('/network/:exchange_id/order/all', requireAuth, requirePermission('trade'), (req, res) => {
     const { user_id, symbol } = req.query;
     if (!user_id) return res.status(400).json({ message: 'user_id is required' });
     const data = store.cancelAll(user_id, symbol);
@@ -216,7 +255,7 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(data);
   });
 
-  router.get('/network/:exchange_id/user/trades', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/user/trades', requireAuth, requirePermission('read'), (req, res) => {
     const { user_id, symbol, side, limit, page } = req.query;
     const trades = store.listTrades({ symbol, side }).data.filter((t) => !user_id || t.user_id === String(user_id));
     const pageNum = Number(page) || 1;
@@ -226,7 +265,7 @@ const buildRoutes = (store, hub, walletService) => {
     res.json({ count: trades.length, data, page: pageNum, limit: limitNum });
   });
 
-  router.post('/network/:exchange_id/mint', requireAuth, (req, res) => {
+  router.post('/network/:exchange_id/mint', requireAuth, requirePermission('admin'), (req, res) => {
     const { user_id, currency, amount } = req.body;
     if (!user_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
     try {
@@ -238,7 +277,7 @@ const buildRoutes = (store, hub, walletService) => {
     }
   });
 
-  router.post('/network/:exchange_id/burn', requireAuth, (req, res) => {
+  router.post('/network/:exchange_id/burn', requireAuth, requirePermission('admin'), (req, res) => {
     const { user_id, currency, amount } = req.body;
     if (!user_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
     try {
@@ -250,20 +289,20 @@ const buildRoutes = (store, hub, walletService) => {
     }
   });
 
-  router.get('/network/:exchange_id/fees', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/fees', requireAuth, requirePermission('read'), (req, res) => {
     res.json({ count: 0, data: [] });
   });
 
-  router.get('/network/:exchange_id/fees/settle', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/fees/settle', requireAuth, requirePermission('admin'), (req, res) => {
     res.json({ settled: true, timestamp: new Date().toISOString() });
   });
 
-  router.get('/network/:exchange_id/deposits', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/deposits', requireAuth, requirePermission('read'), (req, res) => {
     const result = store.listDeposits(req.query);
     res.json(result);
   });
 
-  router.get('/network/:exchange_id/withdrawals', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/withdrawals', requireAuth, requirePermission('read'), (req, res) => {
     const result = store.listWithdrawals(req.query);
     res.json(result);
   });
@@ -280,7 +319,7 @@ const buildRoutes = (store, hub, walletService) => {
     }
   });
 
-  router.delete('/network/:exchange_id/withdrawal', requireAuth, (req, res) => {
+  router.delete('/network/:exchange_id/withdrawal', requireAuth, requirePermission('trade'), (req, res) => {
     const { user_id, withdrawal_id } = req.query;
     if (!user_id || !withdrawal_id) return res.status(400).json({ message: 'missing parameters' });
     const updated = store.cancelWithdrawal(user_id, withdrawal_id);
@@ -288,11 +327,11 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(updated);
   });
 
-  router.get('/network/:exchange_id/user/deposits', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/user/deposits', requireAuth, requirePermission('read'), (req, res) => {
     res.json(store.listDeposits(req.query));
   });
 
-  router.get('/network/:exchange_id/user/withdrawals', requireAuth, (req, res) => {
+  router.get('/network/:exchange_id/user/withdrawals', requireAuth, requirePermission('read'), (req, res) => {
     res.json(store.listWithdrawals(req.query));
   });
 
@@ -363,7 +402,7 @@ const buildRoutes = (store, hub, walletService) => {
     }
   });
 
-  router.post('/network/:exchange_id/transfer', requireAuth, (req, res) => {
+  router.post('/network/:exchange_id/transfer', requireAuth, requirePermission('trade'), (req, res) => {
     const { sender_id, receiver_id, currency, amount } = req.body;
     if (!sender_id || !receiver_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
 
