@@ -481,7 +481,7 @@ const buildRoutes = (store, hub, walletService) => {
     return res.status(400).json({ message: 'unknown webhook type' });
   });
 
-  router.post('/network/:exchange_id/wallet/poll', requireAuth, (req, res) => {
+  router.post('/network/:exchange_id/wallet/poll', requireAuth, requirePermission('admin'), (req, res) => {
     const updated = walletService.pollConfirmations();
     res.json({ count: updated.length, data: updated });
   });
