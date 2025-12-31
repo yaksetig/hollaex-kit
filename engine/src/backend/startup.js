@@ -33,12 +33,13 @@ const seedAdmin = async (pool) => {
   }
 };
 
-const initialize = async () => {
-  const pool = createPool(config.database);
-  await verifyConnectivity(pool);
-  await runMigrations(pool, config.paths.migrationsDir);
-  await seedAdmin(pool);
-  return pool;
+const initialize = async (pool) => {
+  const poolConfig = { ...config.db, name: config.db?.database };
+  const dbPool = pool || createPool(poolConfig);
+  await verifyConnectivity(dbPool);
+  await runMigrations(dbPool, config.paths.migrationsDir);
+  await seedAdmin(dbPool);
+  return dbPool;
 };
 
 if (require.main === module) {

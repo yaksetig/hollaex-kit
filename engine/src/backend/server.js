@@ -6,6 +6,8 @@ const { authMiddleware } = require('./auth');
 const { buildRoutes } = require('./routes');
 const { WebsocketHub } = require('./websocket');
 const { WalletService } = require('./wallet-service');
+const { Database } = require('./db');
+const { initialize } = require('./startup');
 
 const buildServer = async () => {
   const app = express();
@@ -18,25 +20,33 @@ const buildServer = async () => {
   );
   app.use(authMiddleware);
 
-const store = new DataStore();
-const server = http.createServer(app);
-const websocketHub = new WebsocketHub(server, store);
-const walletService = new WalletService(store);
+  const db = new Database();
+  await initialize(db.pool);
 
-app.use('/v2', buildRoutes(store, websocketHub, walletService));
+  const store = new DataStore(db);
+  await store.initialize();
 
   const server = http.createServer(app);
   const websocketHub = new WebsocketHub(server, store);
+  const walletService = new WalletService(store);
 
-  app.use('/v2', buildRoutes(store, websocketHub));
+  app.use('/v2', buildRoutes(store, websocketHub, walletService));
 
   app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
 
-  return { app, server, websocketHub, store };
+  return { app, server, websocketHub, store, db };
 };
 
 if (require.main === module) {
-  buildServer().then(({ server }) => {
+  buildServer().then(({ server, db }) => {
+    const shutdown = async () => {
+      await new Promise((resolve) => server.close(resolve));
+      await db.close();
+    };
+
+    process.on('SIGINT', () => shutdown());
+    process.on('SIGTERM', () => shutdown());
+
     server.listen(config.server.port, () => {
       // eslint-disable-next-line no-console
       console.log(`Custom network backend listening on ${config.server.port}`);
