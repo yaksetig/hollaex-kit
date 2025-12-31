@@ -550,7 +550,7 @@ const buildRoutes = (store, hub, walletService) => {
 
     const atomicAmount = toAtomic(amount);
     try {
-      store.debit(sender_id, currency, atomicAmount);
+      store.guardedDebit(sender_id, currency, atomicAmount);
       store.credit(receiver_id, currency, atomicAmount);
       hub.publishWallet(sender_id);
       hub.publishWallet(receiver_id);
