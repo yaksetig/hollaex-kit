@@ -3,9 +3,12 @@ const path = require('path');
 const { Pool } = require('pg');
 
 const buildConnectionString = (config) => {
-  if (config.url) return config.url;
+  const connectionString = config.connectionString || config.url;
+  if (connectionString) return connectionString;
+
   const auth = `${encodeURIComponent(config.user)}:${encodeURIComponent(config.password)}`;
-  return `postgresql://${auth}@${config.host}:${config.port}/${config.name}`;
+  const database = config.database || config.name;
+  return `postgresql://${auth}@${config.host}:${config.port}/${database}`;
 };
 
 const createPool = (config) => {
