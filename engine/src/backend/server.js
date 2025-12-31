@@ -24,7 +24,6 @@ const buildServer = async () => {
   const walletService = new WalletService(store);
   const server = http.createServer(app);
   const websocketHub = new WebsocketHub(server, store);
-  const walletService = new WalletService(store);
 
   app.use('/v2', buildRoutes(store, websocketHub, walletService));
 
