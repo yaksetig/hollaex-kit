@@ -999,7 +999,11 @@ class DataStore {
   }
 
   getPendingDeposits() {
-    return this.deposits.filter((deposit) => !['completed', 'failed', 'cancelled'].includes(deposit.status));
+    return this.deposits.filter(
+      (deposit) =>
+        !['completed', 'failed', 'cancelled'].includes(deposit.status) &&
+        deposit.reconciliation_state !== 'pending_reconciliation'
+    );
   }
 
   createWithdrawalTransaction(payload) {
@@ -1071,7 +1075,11 @@ class DataStore {
   }
 
   getPendingWithdrawals() {
-    return this.withdrawals.filter((withdrawal) => !['completed', 'failed', 'cancelled'].includes(withdrawal.status));
+    return this.withdrawals.filter(
+      (withdrawal) =>
+        !['completed', 'failed', 'cancelled'].includes(withdrawal.status) &&
+        withdrawal.reconciliation_state !== 'pending_reconciliation'
+    );
   }
 
   listDeposits(filters = {}) {
