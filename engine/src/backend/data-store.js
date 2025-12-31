@@ -425,6 +425,15 @@ class DataStore {
       throw new Error('Hold amount must be greater than zero');
     }
 
+    const current = this.ensureBalance(userId, currency);
+    if (BigInt(current.available) < amount) {
+      const requested = toDisplay(amount);
+      const available = toDisplay(current.available);
+      throw new Error(
+        `Insufficient available ${currency} balance to create hold: requested ${requested}, available ${available}`
+      );
+    }
+
     const balance = this.updateBalance(userId, currency, { deltaAvailable: -amount });
     const hold = {
       id: uuidv4(),
