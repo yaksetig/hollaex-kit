@@ -23,6 +23,19 @@ It provides deterministic order creation/cancellation, fixed-point balance accou
 - `db/schema.sql` and `db/migrations/001_init.sql` – starter schema and migration for persisting the stubbed models when wiring to a database.
 - `Dockerfile.backend` and `docker-compose.yml` – local runtime scaffolding for the backend shim.
 
+## Operations
+
+- **Database migrations**: `npm start` runs a startup routine that verifies Postgres connectivity, applies SQL migrations in `db/migrations`, and seeds a default operator user plus balances derived from `SEED_BALANCES`. To run manually:
+
+  ```bash
+  DATABASE_URL=postgresql://engine:engine@localhost:5434/hollaex_engine \
+  node src/backend/startup.js
+  ```
+
+- **Health/readiness**: `/health` returns a liveness indicator. `/readiness` performs database checks and optional wallet/custody probes configured via `WALLET_SERVICE_URL` and `CUSTODY_SERVICE_URL`.
+
+- **Credentials and key rotation**: provide updated API keys or activation codes through the environment (`DEV_API_KEY`, `DEV_API_SECRET`, `EXCHANGE_ACTIVATION_CODE`). Restarting the service triggers reseeding and ensures new credentials are persisted.
+
 ## Usage
 The engine is designed to be embedded in a service that exposes REST and websocket endpoints. A minimal usage example:
 

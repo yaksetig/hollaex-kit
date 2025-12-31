@@ -60,6 +60,21 @@ module.exports = {
     migrationsDir: path.join(__dirname, '../../db/migrations'),
     schemaFile: path.join(__dirname, '../../db/schema.sql'),
   },
+  health: {
+    walletServiceUrl: env.WALLET_SERVICE_URL,
+    custodyServiceUrl: env.CUSTODY_SERVICE_URL,
+    timeoutMs: Number(env.HEALTHCHECK_TIMEOUT_MS || 2000),
+  },
+  seeding: {
+    adminEmail: env.SEED_ADMIN_EMAIL || 'operator@demo.exchange',
+    seedBalances: env.SEED_BALANCES
+      ? env.SEED_BALANCES.split(',').reduce((acc, pair) => {
+          const [currency, value] = pair.split('=');
+          if (currency && value) acc[currency.trim()] = value.trim();
+          return acc;
+        }, {})
+      : { usdt: '10000', xht: '100' },
+  },
   decimal: {
     scale: DEFAULT_SCALE,
     multiplier: MULTIPLIER,

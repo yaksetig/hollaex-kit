@@ -7,6 +7,7 @@ services:
     ports:
       - "3003:3003"
     environment:
+      - DATABASE_URL=postgresql://engine:engine@db:5432/hollaex_engine
       - PORT=3003
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -20,6 +21,8 @@ services:
       - DEV_API_SECRET=dev-api-secret
       - DEV_API_USER_ID=1
       - DEV_TOKENS=dev-access-token
+      - WALLET_SERVICE_URL=http://wallet:8080/health
+      - CUSTODY_SERVICE_URL=http://custody:8080/health
     command: npm start
     depends_on:
       - postgres
