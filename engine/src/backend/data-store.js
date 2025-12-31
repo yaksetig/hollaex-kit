@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const Decimal = require('decimal.js');
 const config = require('./config');
 const { toAtomic, toDisplay, multiplyAtomic } = require('./amounts');
+const { Ledger } = require('./ledger');
 
 class DataStore {
   constructor() {
@@ -12,6 +13,7 @@ class DataStore {
     this.users = new Map();
     this.balances = new Map();
     this.orders = new Map();
+    this.orderBooks = new Map();
     this.holds = new Map();
     this.holdsByRef = new Map();
     this.ledgerEntries = [];
@@ -19,6 +21,7 @@ class DataStore {
     this.deposits = [];
     this.withdrawals = [];
     this.idempotency = new Map();
+    this.ledger = new Ledger(this);
 
     this.exchange = {
       id: config.exchange.id,
@@ -42,6 +45,8 @@ class DataStore {
     this.tickers = {};
     this.orderbooks = {};
     this.marketTrades = {};
+
+    this.orderBooks.clear();
 
     config.markets.forEach((market, idx) => {
       const basePrice = 100 + idx * 50;
@@ -77,7 +82,28 @@ class DataStore {
           timestamp: now.toISOString(),
         },
       ];
+
+      this.orderBooks.set(market.symbol, { bids: [], asks: [] });
     });
+  }
+
+  isOpen(order) {
+    return order && (order.status === 'new' || order.status === 'pfilled');
+  }
+
+  remainingSize(order) {
+    return new Decimal(order.size).minus(new Decimal(order.filled || 0));
+  }
+
+  getMarket(symbol) {
+    return config.markets.find((m) => m.symbol === symbol);
+  }
+
+  ensureBook(symbol) {
+    if (!this.orderBooks.has(symbol)) {
+      this.orderBooks.set(symbol, { bids: [], asks: [] });
+    }
+    return this.orderBooks.get(symbol);
   }
 
   listUsers() {
@@ -206,6 +232,21 @@ class DataStore {
     return hold;
   }
 
+  consumeHold(holdId, amountAtomic) {
+    const hold = this.holds.get(holdId);
+    if (!hold || amountAtomic <= 0n) return hold || null;
+    const consume = BigInt(amountAtomic);
+    if (consume > hold.remaining) {
+      throw new Error('Cannot consume more than remaining hold');
+    }
+    hold.remaining -= consume;
+    hold.updated_at = new Date().toISOString();
+    if (hold.remaining === 0n) {
+      hold.released_at = hold.updated_at;
+    }
+    return hold;
+  }
+
   findHoldByReference(ref_type, ref_id) {
     const holdId = this.holdsByRef.get(`${ref_type}:${ref_id}`);
     return holdId ? this.holds.get(holdId) : null;
@@ -223,7 +264,7 @@ class DataStore {
       return this.orders.get(this.idempotency.get(idempotencyKey));
     }
 
-    const market = config.markets.find((m) => m.symbol === symbol);
+    const market = this.getMarket(symbol);
     if (!market) {
       throw new Error('Market not found');
     }
@@ -314,7 +355,175 @@ class DataStore {
 
     this.orders.set(id, order);
     this.idempotency.set(idempotencyKey, id);
-    return order;
+    this.queueOrder(order);
+    return this.orders.get(id);
+  }
+
+  queueOrder(order) {
+    const book = this.ensureBook(order.symbol);
+    const side = order.side === 'buy' ? 'bids' : 'asks';
+
+    if (order.type === 'market') {
+      this.match(order);
+      if (this.isOpen(order)) {
+        order.status = 'cancelled';
+        order.updated_at = new Date().toISOString();
+        if (order.hold_id) {
+          this.releaseHold(order.hold_id);
+        }
+      }
+      this.updateOrderbookSnapshot(order.symbol);
+      return;
+    }
+
+    book[side].push(order);
+    this.sortBookSide(book[side], side);
+    this.match(order);
+    this.updateOrderbookSnapshot(order.symbol);
+  }
+
+  sortBookSide(list, side) {
+    list.sort((a, b) => {
+      if (side === 'bids') {
+        if (a.price !== b.price) return b.price - a.price;
+      } else if (a.price !== b.price) return a.price - b.price;
+      return new Date(a.created_at) - new Date(b.created_at);
+    });
+  }
+
+  pruneBooks(symbol) {
+    const book = this.ensureBook(symbol);
+    book.bids = book.bids.filter((order) => this.isOpen(order));
+    book.asks = book.asks.filter((order) => this.isOpen(order));
+    this.sortBookSide(book.bids, 'bids');
+    this.sortBookSide(book.asks, 'asks');
+  }
+
+  match(taker) {
+    const market = this.getMarket(taker.symbol);
+    const book = this.ensureBook(taker.symbol);
+    const takerSide = taker.side;
+    const oppositeSide = takerSide === 'buy' ? 'asks' : 'bids';
+    const priceComparator = taker.type === 'market'
+      ? () => true
+      : takerSide === 'buy'
+        ? (maker) => maker.price <= taker.price
+        : (maker) => maker.price >= taker.price;
+
+    book[oppositeSide] = book[oppositeSide].filter((order) => this.isOpen(order));
+    let bestMaker = book[oppositeSide][0];
+
+    while (bestMaker && this.isOpen(taker) && this.isOpen(bestMaker) && priceComparator(bestMaker)) {
+      const matchedQuantity = Decimal.min(this.remainingSize(taker), this.remainingSize(bestMaker));
+      const price = bestMaker.price;
+
+      this.applyTrade({ taker, maker: bestMaker, market, quantity: matchedQuantity, price });
+
+      this.sortBookSide(book[oppositeSide], oppositeSide);
+      this.sortBookSide(book[takerSide === 'buy' ? 'bids' : 'asks'], takerSide === 'buy' ? 'bids' : 'asks');
+      bestMaker = book[oppositeSide].find((order) => this.isOpen(order));
+      book[oppositeSide] = book[oppositeSide].filter((order) => this.isOpen(order));
+    }
+
+    if (!this.isOpen(taker)) {
+      book[takerSide === 'buy' ? 'bids' : 'asks'] = book[takerSide === 'buy' ? 'bids' : 'asks'].filter((o) => this.isOpen(o));
+    }
+  }
+
+  applyTrade({ taker, maker, market, quantity, price }) {
+    const tradeSize = Number(quantity.toString());
+    const baseAtomic = toAtomic(quantity.toString());
+    const priceAtomic = toAtomic(price.toString());
+    const quoteAtomic = multiplyAtomic(priceAtomic, quantity.toString());
+    const timestamp = new Date().toISOString();
+
+    taker.filled += tradeSize;
+    maker.filled += tradeSize;
+
+    taker.updated_at = timestamp;
+    maker.updated_at = timestamp;
+
+    taker.status = this.remainingSize(taker).eq(0) ? 'filled' : 'pfilled';
+    maker.status = this.remainingSize(maker).eq(0) ? 'filled' : 'pfilled';
+
+    const trade = this.recordTrade({
+      symbol: market.symbol,
+      side: taker.side,
+      price,
+      size: tradeSize,
+      taker_order_id: taker.id,
+      maker_order_id: maker.id,
+    });
+
+    this.settleBalanceForOrder(taker, market, baseAtomic, quoteAtomic, trade.id, price, tradeSize);
+    this.settleBalanceForOrder(maker, market, baseAtomic, quoteAtomic, trade.id, price, tradeSize);
+
+    if (taker.status === 'filled' && taker.hold_id) {
+      this.releaseHold(taker.hold_id);
+    }
+    if (maker.status === 'filled' && maker.hold_id) {
+      this.releaseHold(maker.hold_id);
+    }
+
+    this.orders.set(taker.id, { ...taker });
+    this.orders.set(maker.id, { ...maker });
+    this.updateOrderbookSnapshot(market.symbol);
+  }
+
+  settleBalanceForOrder(order, market, baseAtomic, quoteAtomic, tradeId, price, tradeSize) {
+    const reference = `trade:${tradeId}`;
+    const baseChange = toDisplay(baseAtomic);
+    const quoteChange = toDisplay(quoteAtomic);
+    if (order.side === 'buy') {
+      this.consumeHold(order.hold_id, quoteAtomic);
+      this.ledger.recordEntry({ user_id: order.user_id, currency: market.quote, change: `-${quoteChange}`, reference });
+      this.ledger.recordEntry({ user_id: order.user_id, currency: market.base, change: baseChange, reference });
+    } else {
+      this.consumeHold(order.hold_id, baseAtomic);
+      this.ledger.recordEntry({ user_id: order.user_id, currency: market.base, change: `-${baseChange}`, reference });
+      this.ledger.recordEntry({ user_id: order.user_id, currency: market.quote, change: quoteChange, reference });
+    }
+
+    if (order.status === 'filled' && order.side === 'buy') {
+      const remainingQuote = this.holds.get(order.hold_id)?.remaining || 0n;
+      if (remainingQuote > 0n) {
+        this.releaseHold(order.hold_id);
+      }
+    }
+
+    const previousFilled = order.filled - tradeSize;
+    const previousAvg = order.avg_price || 0;
+    order.avg_price = previousFilled <= 0
+      ? price
+      : (previousAvg * previousFilled + price * tradeSize) / order.filled;
+  }
+
+  updateOrderbookSnapshot(symbol) {
+    const book = this.ensureBook(symbol);
+    const aggregate = (orders, side) => {
+      const levels = new Map();
+      orders
+        .filter((order) => this.isOpen(order))
+        .forEach((order) => {
+          const remaining = this.remainingSize(order);
+          if (remaining.lte(0)) return;
+          if (order.price === null || order.price === undefined) return;
+          const key = order.price;
+          const existing = levels.get(key) || new Decimal(0);
+          levels.set(key, existing.plus(remaining));
+        });
+      const sorted = Array.from(levels.entries()).sort((a, b) => {
+        if (side === 'bids') return b[0] - a[0];
+        return a[0] - b[0];
+      });
+      return sorted.map(([price, qty]) => [price, Number(qty.toFixed(Number(config.decimal.scale || 8)))]);
+    };
+
+    this.orderbooks[symbol] = {
+      bids: aggregate(book.bids, 'bids'),
+      asks: aggregate(book.asks, 'asks'),
+      timestamp: new Date().toISOString(),
+    };
   }
 
   cancelOrder(userId, orderId) {
@@ -332,6 +541,8 @@ class DataStore {
 
     const updated = { ...order, status: 'cancelled', updated_at: now };
     this.orders.set(orderId, updated);
+    this.pruneBooks(order.symbol);
+    this.updateOrderbookSnapshot(order.symbol);
     return updated;
   }
 
@@ -362,13 +573,15 @@ class DataStore {
     return order;
   }
 
-  recordTrade({ symbol, side, price, size }) {
+  recordTrade({ symbol, side, price, size, taker_order_id, maker_order_id }) {
     const trade = {
       id: uuidv4(),
       symbol,
       side,
       price: Number(price),
       size: Number(size),
+      taker_order_id,
+      maker_order_id,
       timestamp: new Date().toISOString(),
     };
     this.trades.push(trade);
