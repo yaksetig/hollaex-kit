@@ -73,18 +73,59 @@ class DataStore {
         timestamp: now.toISOString(),
       };
 
-      this.marketTrades[market.symbol] = [
-        {
-          id: uuidv4(),
-          price: basePrice,
-          size: 0.5,
-          side: 'buy',
-          timestamp: now.toISOString(),
-        },
-      ];
+      this.marketTrades[market.symbol] = [];
+      this.recordTrade({ symbol: market.symbol, side: 'buy', price: basePrice, size: 0.5, timestamp: now });
 
       this.orderBooks.set(market.symbol, { bids: [], asks: [] });
     });
+  }
+
+  normalizeTimestampMs(value, { defaultNow = false } = {}) {
+    if (value === undefined || value === null || value === '') {
+      if (defaultNow) return Date.now();
+      throw new Error('Invalid timestamp');
+    }
+
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric < 1e12 ? Math.floor(numeric * 1000) : Math.floor(numeric);
+    }
+
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+
+    if (defaultNow) return Date.now();
+    throw new Error('Invalid timestamp');
+  }
+
+  resolutionToMs(resolution) {
+    const match = String(resolution || '')
+      .trim()
+      .match(/^(\d+)([mhdw]?)$/i);
+
+    if (!match) return null;
+
+    const value = Number(match[1]);
+    const unit = match[2].toLowerCase();
+
+    const unitMs =
+      unit === 'h' ? 60 * 60 * 1000 : unit === 'd' ? 24 * 60 * 60 * 1000 : unit === 'w' ? 7 * 24 * 60 * 60 * 1000 : 60 * 1000;
+
+    return value * unitMs;
+  }
+
+  extractTimestampMs(trade) {
+    if (!trade) return Date.now();
+    if (trade.timestamp_ms !== undefined) {
+      return this.normalizeTimestampMs(trade.timestamp_ms, { defaultNow: true });
+    }
+    if (trade.timestamp) {
+      const parsed = Date.parse(trade.timestamp);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return Date.now();
   }
 
   isOpen(order) {
@@ -573,7 +614,8 @@ class DataStore {
     return order;
   }
 
-  recordTrade({ symbol, side, price, size, taker_order_id, maker_order_id }) {
+  recordTrade({ symbol, side, price, size, taker_order_id, maker_order_id, timestamp }) {
+    const timestamp_ms = this.normalizeTimestampMs(timestamp ?? Date.now(), { defaultNow: true });
     const trade = {
       id: uuidv4(),
       symbol,
@@ -582,12 +624,92 @@ class DataStore {
       size: Number(size),
       taker_order_id,
       maker_order_id,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(timestamp_ms).toISOString(),
+      timestamp_ms,
     };
     this.trades.push(trade);
     if (!this.marketTrades[symbol]) this.marketTrades[symbol] = [];
     this.marketTrades[symbol].push(trade);
     return trade;
+  }
+
+  buildOhlcv({ symbol, from, to, resolution, fillGaps = true }) {
+    if (!this.getMarket(symbol)) {
+      throw new Error('Market not found');
+    }
+
+    const intervalMs = this.resolutionToMs(resolution);
+    if (!intervalMs) {
+      throw new Error('Unsupported resolution');
+    }
+
+    const fromMs = this.normalizeTimestampMs(from);
+    const toMs = this.normalizeTimestampMs(to);
+
+    if (fromMs >= toMs) {
+      throw new Error('Invalid time range');
+    }
+
+    const trades = (this.marketTrades[symbol] || [])
+      .filter((trade) => {
+        const ts = this.extractTimestampMs(trade);
+        return ts >= fromMs && ts <= toMs;
+      })
+      .sort((a, b) => this.extractTimestampMs(a) - this.extractTimestampMs(b));
+
+    const buckets = new Map();
+    trades.forEach((trade) => {
+      const ts = this.extractTimestampMs(trade);
+      const bucketTime = Math.floor(ts / intervalMs) * intervalMs;
+      const existing = buckets.get(bucketTime);
+
+      if (existing) {
+        existing.high = Math.max(existing.high, trade.price);
+        existing.low = Math.min(existing.low, trade.price);
+        existing.close = trade.price;
+        existing.volume += trade.size;
+      } else {
+        buckets.set(bucketTime, {
+          time: bucketTime,
+          open: trade.price,
+          high: trade.price,
+          low: trade.price,
+          close: trade.price,
+          volume: trade.size,
+        });
+      }
+    });
+
+    const candles = [];
+    let cursor = Math.floor(fromMs / intervalMs) * intervalMs;
+    if (cursor < fromMs) cursor += intervalMs;
+    let previousClose = null;
+
+    while (cursor <= toMs) {
+      const bucket = buckets.get(cursor);
+      if (bucket) {
+        previousClose = bucket.close;
+        candles.push(bucket);
+      } else if (fillGaps && previousClose !== null) {
+        // TradingView-friendly: fill gaps with the previous close to avoid missing bars
+        candles.push({ time: cursor, open: previousClose, high: previousClose, low: previousClose, close: previousClose, volume: 0 });
+      }
+      cursor += intervalMs;
+    }
+
+    if (!candles.length) {
+      return { s: 'no_data', nextTime: Math.floor(fromMs / 1000) };
+    }
+
+    return {
+      s: 'ok',
+      t: candles.map((candle) => Math.floor(candle.time / 1000)),
+      o: candles.map((candle) => Number(candle.open)),
+      h: candles.map((candle) => Number(candle.high)),
+      l: candles.map((candle) => Number(candle.low)),
+      c: candles.map((candle) => Number(candle.close)),
+      v: candles.map((candle) => Number(candle.volume)),
+    };
   }
 
   listTrades(filters = {}) {

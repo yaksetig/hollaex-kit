@@ -4,16 +4,6 @@ const config = require('./config');
 const { Ledger } = require('./ledger');
 const { toDisplay, toAtomic } = require('./amounts');
 
-const buildChartResponse = (from, to) => {
-  const t = [Number(from), Number(to)];
-  const o = [100, 101];
-  const h = [102, 103];
-  const l = [99, 100];
-  const c = [101, 102];
-  const v = [10, 12];
-  return { s: 'ok', t, o, h, l, c, v };
-};
-
 const buildUdfConfig = () => ({
   supported_resolutions: ['1m', '5m', '1h', '1d'],
   supports_group_request: false,
@@ -98,14 +88,23 @@ const buildRoutes = (store, hub) => {
   router.get('/network/:exchange_id/chart', (req, res) => {
     const { from, to, symbol, resolution } = req.query;
     if (!from || !to || !symbol || !resolution) return res.status(400).json({ message: 'missing parameters' });
-    res.json(buildChartResponse(from, to));
+    try {
+      const data = store.buildOhlcv({ symbol, from, to, resolution, fillGaps: true });
+      res.json(data);
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   router.get('/network/:exchange_id/charts', (req, res) => {
     const { from, to, resolution } = req.query;
     if (!from || !to || !resolution) return res.status(400).json({ message: 'missing parameters' });
-    const result = config.markets.map((market) => ({ symbol: market.symbol, ...buildChartResponse(from, to) }));
-    res.json(result);
+    try {
+      const result = config.markets.map((market) => ({ symbol: market.symbol, ...store.buildOhlcv({ symbol: market.symbol, from, to, resolution, fillGaps: true }) }));
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   router.get('/network/:exchange_id/udf/config', (req, res) => res.json(buildUdfConfig()));
@@ -119,7 +118,12 @@ const buildRoutes = (store, hub) => {
   router.get('/network/:exchange_id/udf/history', (req, res) => {
     const { from, to, symbol, resolution } = req.query;
     if (!from || !to || !symbol || !resolution) return res.status(400).json({ message: 'missing parameters' });
-    res.json(buildChartResponse(from, to));
+    try {
+      const data = store.buildOhlcv({ symbol, from, to, resolution, fillGaps: true });
+      res.json(data);
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   router.get('/network/:exchange_id/user', requireAuth, (req, res) => {
