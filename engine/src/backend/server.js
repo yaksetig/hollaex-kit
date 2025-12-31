@@ -6,6 +6,8 @@ const { authMiddleware } = require('./auth');
 const { buildRoutes } = require('./routes');
 const { WebsocketHub } = require('./websocket');
 const { WalletService } = require('./wallet-service');
+const { Database } = require('./db');
+const { initialize } = require('./startup');
 
 const buildServer = async () => {
   const app = express();
@@ -22,6 +24,7 @@ const buildServer = async () => {
   const walletService = new WalletService(store);
   const server = http.createServer(app);
   const websocketHub = new WebsocketHub(server, store);
+  const walletService = new WalletService(store);
 
   app.use('/v2', buildRoutes(store, websocketHub, walletService));
 
@@ -31,7 +34,15 @@ const buildServer = async () => {
 };
 
 if (require.main === module) {
-  buildServer().then(({ server }) => {
+  buildServer().then(({ server, db }) => {
+    const shutdown = async () => {
+      await new Promise((resolve) => server.close(resolve));
+      await db.close();
+    };
+
+    process.on('SIGINT', () => shutdown());
+    process.on('SIGTERM', () => shutdown());
+
     server.listen(config.server.port, () => {
       // eslint-disable-next-line no-console
       console.log(`Custom network backend listening on ${config.server.port}`);
