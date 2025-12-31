@@ -9,6 +9,11 @@ services:
     environment:
       - DATABASE_URL=postgresql://engine:engine@db:5432/hollaex_engine
       - PORT=3003
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hollaex
+      - DB_USER=hollaex
+      - DB_PASSWORD=hollaex
       - EXCHANGE_ID=custom-network
       - EXCHANGE_NAME=Custom Network Backend
       - EXCHANGE_ACTIVATION_CODE=dev-activation-code
@@ -20,13 +25,18 @@ services:
       - CUSTODY_SERVICE_URL=http://custody:8080/health
     command: npm start
     depends_on:
-      - db
+      - postgres
 
-  db:
-    image: postgres:15-alpine
+  postgres:
+    image: postgres:16
     environment:
-      - POSTGRES_USER=engine
-      - POSTGRES_PASSWORD=engine
-      - POSTGRES_DB=hollaex_engine
+      - POSTGRES_DB=hollaex
+      - POSTGRES_USER=hollaex
+      - POSTGRES_PASSWORD=hollaex
     ports:
-      - "5434:5432"
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

@@ -5,46 +5,43 @@ const { DataStore } = require('./data-store');
 const { authMiddleware } = require('./auth');
 const { buildRoutes } = require('./routes');
 const { WebsocketHub } = require('./websocket');
-const { initialize } = require('./startup');
-const { buildHealthHandlers } = require('./health');
+const { WalletService } = require('./wallet-service');
 
-const app = express();
-app.use(
-  express.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf.toString();
-    },
-  })
-);
-app.use(authMiddleware);
+const buildServer = async () => {
+  const app = express();
+  app.use(
+    express.json({
+      verify: (req, res, buf) => {
+        req.rawBody = buf.toString();
+      },
+    })
+  );
+  app.use(authMiddleware);
 
 const store = new DataStore();
 const server = http.createServer(app);
 const websocketHub = new WebsocketHub(server, store);
+const walletService = new WalletService(store);
 
-app.use('/v2', buildRoutes(store, websocketHub));
+app.use('/v2', buildRoutes(store, websocketHub, walletService));
 
-let serverReady = false;
+  const server = http.createServer(app);
+  const websocketHub = new WebsocketHub(server, store);
 
-const bootstrap = async () => {
-  const pool = await initialize();
-  const { health, readiness } = buildHealthHandlers({ pool, config });
-  app.get('/health', health);
-  app.get('/readiness', readiness);
-  serverReady = true;
+  app.use('/v2', buildRoutes(store, websocketHub));
 
-  if (require.main === module) {
+  app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
+
+  return { app, server, websocketHub, store };
+};
+
+if (require.main === module) {
+  buildServer().then(({ server }) => {
     server.listen(config.server.port, () => {
       // eslint-disable-next-line no-console
       console.log(`Custom network backend listening on ${config.server.port}`);
     });
-  }
-};
+  });
+}
 
-bootstrap().catch((error) => {
-  // eslint-disable-next-line no-console
-  console.error('Failed to start server', error);
-  process.exitCode = 1;
-});
-
-module.exports = { app, server, websocketHub, store, serverReady };
+module.exports = { buildServer };

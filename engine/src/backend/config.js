@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const path = require('path');
 
 const env = process.env;
@@ -14,24 +15,25 @@ const toBigInt = (value) => {
   return whole * MULTIPLIER + BigInt(paddedFraction);
 };
 
+const randomSecret = () => crypto.randomBytes(32).toString('hex');
+
 module.exports = {
   server: {
     port: Number(env.CUSTOM_NETWORK_PORT || env.PORT || 3003),
   },
-  database: {
-    url: env.DATABASE_URL,
-    host: env.DB_HOST || 'localhost',
-    port: Number(env.DB_PORT || 5432),
-    name: env.DB_NAME || 'hollaex_engine',
-    user: env.DB_USER || 'postgres',
-    password: env.DB_PASSWORD || 'postgres',
+  db: {
+    host: env.DB_HOST || env.POSTGRES_HOST || 'postgres',
+    port: Number(env.DB_PORT || env.POSTGRES_PORT || 5432),
+    database: env.DB_NAME || env.POSTGRES_DB || 'hollaex',
+    user: env.DB_USER || env.POSTGRES_USER || 'hollaex',
+    password: env.DB_PASSWORD || env.POSTGRES_PASSWORD || 'hollaex',
     ssl: env.DB_SSL === 'true',
-    connectionTimeoutMs: Number(env.DB_CONNECTION_TIMEOUT_MS || 5000),
+    connectionString: env.DATABASE_URL,
   },
   exchange: {
     id: env.EXCHANGE_ID || 'custom-network',
     name: env.EXCHANGE_NAME || 'Custom Network Backend',
-    activationCode: env.EXCHANGE_ACTIVATION_CODE || 'dev-activation-code',
+    activationCode: env.EXCHANGE_ACTIVATION_CODE || randomSecret(),
     createdAt: env.EXCHANGE_CREATED_AT || new Date().toISOString(),
   },
   assets: env.EXCHANGE_ASSETS
@@ -47,13 +49,12 @@ module.exports = {
         { symbol: 'btc-usdt', base: 'btc', quote: 'usdt', increment_price: '0.1', increment_size: '0.0001' },
       ],
   auth: {
-    devTokens: env.DEV_TOKENS ? env.DEV_TOKENS.split(',') : ['dev-access-token'],
-    apiKeys: {
-      [env.DEV_API_KEY || 'dev-api-key']: {
-        secret: env.DEV_API_SECRET || 'dev-api-secret',
-        userId: env.DEV_API_USER_ID || '1',
-      },
-    },
+    storeFile: env.AUTH_STORE_FILE || path.join(__dirname, '../../db/auth.json'),
+    jwtSecret: env.AUTH_JWT_SECRET || randomSecret(),
+    jwtTtl: env.AUTH_JWT_TTL || '12h',
+    defaultKeyPermissions: env.AUTH_DEFAULT_PERMISSIONS
+      ? env.AUTH_DEFAULT_PERMISSIONS.split(',').map((p) => p.trim()).filter(Boolean)
+      : ['read', 'trade', 'write'],
   },
   paths: {
     migrationsDir: path.join(__dirname, '../../db/migrations'),

@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS balances (
   total NUMERIC(32,8) DEFAULT 0,
   available NUMERIC(32,8) DEFAULT 0,
   updated_at TIMESTAMPTZ DEFAULT NOW(),
-  CONSTRAINT balances_user_currency_unique UNIQUE (user_id, currency)
+  UNIQUE(user_id, currency)
 );
 
 CREATE TABLE IF NOT EXISTS orders (
