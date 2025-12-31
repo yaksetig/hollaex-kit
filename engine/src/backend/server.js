@@ -5,6 +5,7 @@ const { DataStore } = require('./data-store');
 const { authMiddleware } = require('./auth');
 const { buildRoutes } = require('./routes');
 const { WebsocketHub } = require('./websocket');
+const { WalletService } = require('./wallet-service');
 
 const app = express();
 app.use(
@@ -19,8 +20,9 @@ app.use(authMiddleware);
 const store = new DataStore();
 const server = http.createServer(app);
 const websocketHub = new WebsocketHub(server, store);
+const walletService = new WalletService(store);
 
-app.use('/v2', buildRoutes(store, websocketHub));
+app.use('/v2', buildRoutes(store, websocketHub, walletService));
 
 app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
 
