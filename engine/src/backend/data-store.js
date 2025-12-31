@@ -28,6 +28,7 @@ class DataStore {
     this.trades = [];
     this.deposits = [];
     this.withdrawals = [];
+    this.addresses = [];
     this.idempotency = new Map();
     this.ledger = new Ledger(this);
 
@@ -295,6 +296,16 @@ class DataStore {
     if (existing) return existing;
     this.setBalance(userId, currency, 0n, 0n);
     return this.getBalance(userId, currency);
+  }
+
+  calculateLedgerBalance(currency) {
+    let total = 0n;
+    this.balances.forEach((bal) => {
+      if (bal.currency === currency) {
+        total += BigInt(bal.total);
+      }
+    });
+    return total;
   }
 
   getWalletSummary(userId) {
@@ -864,13 +875,33 @@ class DataStore {
     return trades;
   }
 
-  addDeposit(payload) {
+  saveAddress(record) {
+    const existing = this.addresses.find(
+      (address) =>
+        address.user_id === record.user_id &&
+        address.asset === record.asset &&
+        address.network === record.network &&
+        address.address === record.address
+    );
+
+    if (existing) return existing;
+
+    this.addresses.push(record);
+    return record;
+  }
+
+  createDepositTransaction(payload) {
     const deposit = {
       id: uuidv4(),
-      status: 'completed',
+      status: 'pending',
+      confirmations: 0,
+      confirmation_required: 2,
+      reconciliation_state: 'pending',
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
       ...payload,
     };
+
     this.deposits.push(deposit);
     if (this.db) {
       this.db
@@ -883,11 +914,31 @@ class DataStore {
     return deposit;
   }
 
-  addWithdrawal(payload) {
+  updateDeposit(id, patch = {}) {
+    const item = this.deposits.find((deposit) => deposit.id === id);
+    if (!item) return null;
+
+    Object.assign(item, patch, { updated_at: new Date().toISOString() });
+    return item;
+  }
+
+  findDepositByTx(txHash) {
+    return this.deposits.find((deposit) => deposit.tx_hash === txHash);
+  }
+
+  getPendingDeposits() {
+    return this.deposits.filter((deposit) => !['completed', 'failed', 'cancelled'].includes(deposit.status));
+  }
+
+  createWithdrawalTransaction(payload) {
     const withdrawal = {
       id: uuidv4(),
       status: 'pending',
+      confirmations: 0,
+      confirmation_required: 2,
+      reconciliation_state: 'pending',
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
       ...payload,
     };
     this.withdrawals.push(withdrawal);
@@ -902,25 +953,61 @@ class DataStore {
     return withdrawal;
   }
 
+  createHoldForWithdrawal(withdrawalId, userId, currency, amountAtomic) {
+    const { hold } = this.createHold(userId, currency, amountAtomic, 'withdrawal', withdrawalId);
+    const withdrawal = this.withdrawals.find((item) => item.id === withdrawalId);
+    if (withdrawal) {
+      withdrawal.hold_id = hold.id;
+      withdrawal.updated_at = new Date().toISOString();
+    }
+    return hold;
+  }
+
+  applyWithdrawalSettlement(withdrawalId, amountAtomic) {
+    const withdrawal = this.withdrawals.find((item) => item.id === withdrawalId);
+    if (!withdrawal) return null;
+
+    if (withdrawal.hold_id) {
+      this.consumeHold(withdrawal.hold_id, amountAtomic);
+    }
+
+    this.updateBalance(withdrawal.user_id, withdrawal.currency, { deltaTotal: -BigInt(amountAtomic), deltaAvailable: 0n });
+    return this.getBalance(withdrawal.user_id, withdrawal.currency);
+  }
+
+  updateWithdrawal(withdrawalId, patch = {}) {
+    const item = this.withdrawals.find((w) => w.id === withdrawalId);
+    if (!item) return null;
+    Object.assign(item, patch, { updated_at: new Date().toISOString() });
+    return item;
+  }
+
+  cancelWithdrawal(userId, withdrawalId) {
+    const item = this.withdrawals.find((w) => w.id === withdrawalId && w.user_id === String(userId));
+    if (!item) return null;
+
+    if (item.hold_id) {
+      this.releaseHold(item.hold_id);
+    }
+
+    Object.assign(item, { status: 'cancelled', updated_at: new Date().toISOString() });
+    return item;
+  }
+
+  getWithdrawal(withdrawalId) {
+    return this.withdrawals.find((w) => w.id === withdrawalId) || null;
+  }
+
+  getPendingWithdrawals() {
+    return this.withdrawals.filter((withdrawal) => !['completed', 'failed', 'cancelled'].includes(withdrawal.status));
+  }
+
   listDeposits(filters = {}) {
     return this.applyFilters(this.deposits, filters);
   }
 
   listWithdrawals(filters = {}) {
     return this.applyFilters(this.withdrawals, filters);
-  }
-
-  updateWithdrawal(userId, withdrawalId, status) {
-    const item = this.withdrawals.find((w) => w.id === withdrawalId && w.user_id === String(userId));
-    if (!item) return null;
-    item.status = status;
-    item.updated_at = new Date().toISOString();
-    if (this.db) {
-      this.db
-        .query('UPDATE withdrawals SET status = $1, updated_at = NOW() WHERE id = $2', [status, withdrawalId])
-        .catch((error) => console.error('Failed to update withdrawal', error.message));
-    }
-    return item;
   }
 
   applyFilters(collection, filters) {

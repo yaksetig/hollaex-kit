@@ -26,7 +26,7 @@ const buildUdfSymbol = (symbol) => ({
   supported_resolutions: ['1m', '5m', '1h', '1d'],
 });
 
-const buildRoutes = (store, hub) => {
+const buildRoutes = (store, hub, walletService) => {
   const router = express.Router();
   const ledger = new Ledger(store);
 
@@ -268,17 +268,22 @@ const buildRoutes = (store, hub) => {
     res.json(result);
   });
 
-  router.post('/network/:exchange_id/withdrawal', requireAuth, (req, res) => {
-    const { user_id, address, currency, amount } = req.query;
+  router.post('/network/:exchange_id/withdrawal', requireAuth, async (req, res) => {
+    const { user_id, address, currency, amount, network } = { ...req.query, ...req.body };
     if (!user_id || !address || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
-    const withdrawal = store.addWithdrawal({ user_id: String(user_id), address, currency, amount });
-    res.status(201).json(withdrawal);
+
+    try {
+      const withdrawal = await walletService.requestWithdrawal({ userId: user_id, address, currency, amount, network });
+      res.status(201).json(withdrawal);
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   router.delete('/network/:exchange_id/withdrawal', requireAuth, (req, res) => {
     const { user_id, withdrawal_id } = req.query;
     if (!user_id || !withdrawal_id) return res.status(400).json({ message: 'missing parameters' });
-    const updated = store.updateWithdrawal(user_id, withdrawal_id, 'cancelled');
+    const updated = store.cancelWithdrawal(user_id, withdrawal_id);
     if (!updated) return res.status(404).json({ message: 'withdrawal not found' });
     res.json(updated);
   });
@@ -291,31 +296,71 @@ const buildRoutes = (store, hub) => {
     res.json(store.listWithdrawals(req.query));
   });
 
+  router.post('/network/:exchange_id/wallet/webhook', (req, res) => {
+    const { type, data } = req.body || {};
+    if (!type || !data) return res.status(400).json({ message: 'missing webhook payload' });
+
+    if (type === 'deposit') {
+      const deposit = walletService.recordIncomingDeposit(data);
+      walletService.evaluateDepositProgress(deposit);
+      return res.status(202).json(deposit);
+    }
+
+    if (type === 'withdrawal') {
+      const withdrawal = store.updateWithdrawal(data.withdrawal_id, {
+        tx_hash: data.tx_hash,
+        confirmations: data.confirmations || 0,
+        network: data.network,
+      });
+      if (!withdrawal) return res.status(404).json({ message: 'withdrawal not found' });
+      walletService.evaluateWithdrawalProgress(withdrawal);
+      return res.status(202).json(withdrawal);
+    }
+
+    return res.status(400).json({ message: 'unknown webhook type' });
+  });
+
+  router.post('/network/:exchange_id/wallet/poll', requireAuth, (req, res) => {
+    const updated = walletService.pollConfirmations();
+    res.json({ count: updated.length, data: updated });
+  });
+
   router.get('/network/:exchange_id/trade', (req, res) => {
     res.json(store.listPublicTrades(req.query.symbol));
   });
 
   router.get('/check-transaction', (req, res) => {
+    const { transaction_id } = req.query;
+    const deposit = store.findDepositByTx(transaction_id);
+    const withdrawal = store.withdrawals.find((item) => item.tx_hash === transaction_id);
+
+    if (!deposit && !withdrawal) {
+      return res.status(404).json({ message: 'transaction not found' });
+    }
+
+    const tx = deposit || withdrawal;
     res.json({
-      currency: req.query.currency,
-      transaction_id: req.query.transaction_id,
-      address: req.query.address,
-      network: req.query.network,
-      confirmed: true,
-      is_testnet: req.query.isTestnet === 'true',
+      currency: tx.currency,
+      transaction_id: transaction_id || tx.id,
+      address: tx.address,
+      network: tx.network,
+      confirmed: tx.status === 'completed',
+      confirmations: tx.confirmations,
+      confirmation_required: tx.confirmation_required,
+      reconciliation_state: tx.reconciliation_state,
     });
   });
 
-  router.post('/network/:exchange_id/create-address', requireAuth, (req, res) => {
-    const { user_id, crypto, network } = req.query;
+  router.post('/network/:exchange_id/create-address', requireAuth, async (req, res) => {
+    const { user_id, crypto, network } = { ...req.query, ...req.body };
     if (!user_id || !crypto) return res.status(400).json({ message: 'missing parameters' });
-    res.status(201).json({
-      user_id: String(user_id),
-      crypto,
-      network: network || 'mainnet',
-      address: `demo-${crypto}-address-${user_id}`,
-      created_at: new Date().toISOString(),
-    });
+
+    try {
+      const address = await walletService.createAddress({ userId: user_id, asset: crypto, network });
+      res.status(201).json(address);
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   router.post('/network/:exchange_id/transfer', requireAuth, (req, res) => {

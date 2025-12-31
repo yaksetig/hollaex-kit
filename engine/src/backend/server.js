@@ -5,7 +5,7 @@ const { DataStore } = require('./data-store');
 const { authMiddleware } = require('./auth');
 const { buildRoutes } = require('./routes');
 const { WebsocketHub } = require('./websocket');
-const { Database } = require('./db');
+const { WalletService } = require('./wallet-service');
 
 const buildServer = async () => {
   const app = express();
@@ -18,11 +18,12 @@ const buildServer = async () => {
   );
   app.use(authMiddleware);
 
-  const database = new Database();
-  await database.runMigrations();
+const store = new DataStore();
+const server = http.createServer(app);
+const websocketHub = new WebsocketHub(server, store);
+const walletService = new WalletService(store);
 
-  const store = new DataStore(database);
-  await store.initialize();
+app.use('/v2', buildRoutes(store, websocketHub, walletService));
 
   const server = http.createServer(app);
   const websocketHub = new WebsocketHub(server, store);
