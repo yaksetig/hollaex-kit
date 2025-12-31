@@ -5,30 +5,42 @@ const { DataStore } = require('./data-store');
 const { authMiddleware } = require('./auth');
 const { buildRoutes } = require('./routes');
 const { WebsocketHub } = require('./websocket');
+const { Database } = require('./db');
 
-const app = express();
-app.use(
-  express.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf.toString();
-    },
-  })
-);
-app.use(authMiddleware);
+const buildServer = async () => {
+  const app = express();
+  app.use(
+    express.json({
+      verify: (req, res, buf) => {
+        req.rawBody = buf.toString();
+      },
+    })
+  );
+  app.use(authMiddleware);
 
-const store = new DataStore();
-const server = http.createServer(app);
-const websocketHub = new WebsocketHub(server, store);
+  const database = new Database();
+  await database.runMigrations();
 
-app.use('/v2', buildRoutes(store, websocketHub));
+  const store = new DataStore(database);
+  await store.initialize();
 
-app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
+  const server = http.createServer(app);
+  const websocketHub = new WebsocketHub(server, store);
+
+  app.use('/v2', buildRoutes(store, websocketHub));
+
+  app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
+
+  return { app, server, websocketHub, store };
+};
 
 if (require.main === module) {
-  server.listen(config.server.port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`Custom network backend listening on ${config.server.port}`);
+  buildServer().then(({ server }) => {
+    server.listen(config.server.port, () => {
+      // eslint-disable-next-line no-console
+      console.log(`Custom network backend listening on ${config.server.port}`);
+    });
   });
 }
 
-module.exports = { app, server, websocketHub, store };
+module.exports = { buildServer };

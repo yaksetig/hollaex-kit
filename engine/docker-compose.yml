@@ -8,6 +8,11 @@ services:
       - "3003:3003"
     environment:
       - PORT=3003
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hollaex
+      - DB_USER=hollaex
+      - DB_PASSWORD=hollaex
       - EXCHANGE_ID=custom-network
       - EXCHANGE_NAME=Custom Network Backend
       - EXCHANGE_ACTIVATION_CODE=dev-activation-code
@@ -16,3 +21,19 @@ services:
       - DEV_API_USER_ID=1
       - DEV_TOKENS=dev-access-token
     command: npm start
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_DB=hollaex
+      - POSTGRES_USER=hollaex
+      - POSTGRES_PASSWORD=hollaex
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

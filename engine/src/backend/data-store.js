@@ -1,12 +1,20 @@
 const { v4: uuidv4 } = require('uuid');
 const Decimal = require('decimal.js');
 const config = require('./config');
+const { Database } = require('./db');
 const { toAtomic, toDisplay, multiplyAtomic } = require('./amounts');
 const { Ledger } = require('./ledger');
 
 class DataStore {
-  constructor() {
+  constructor(db) {
+    this.db = db;
     this.reset();
+  }
+
+  async initialize() {
+    if (this.db instanceof Database) {
+      await this.loadFromDatabase();
+    }
   }
 
   reset() {
@@ -38,6 +46,74 @@ class DataStore {
     });
 
     this.seedMarketData();
+  }
+
+  async loadFromDatabase() {
+    try {
+      const users = await this.db.query('SELECT id, email, created_at FROM users ORDER BY id');
+      this.users.clear();
+      users.rows.forEach((row) => {
+        const id = String(row.id);
+        this.users.set(id, { id, email: row.email, created_at: row.created_at });
+      });
+
+      const balances = await this.db.query('SELECT user_id, currency, total, available, updated_at FROM balances');
+      this.balances.clear();
+      balances.rows.forEach((row) => {
+        this.balances.set(`${row.user_id}:${row.currency}`, {
+          user_id: String(row.user_id),
+          currency: row.currency,
+          total: toAtomic(row.total),
+          available: toAtomic(row.available),
+          updated_at: row.updated_at,
+        });
+      });
+
+      const orders = await this.db.query('SELECT * FROM orders');
+      this.orders.clear();
+      orders.rows.forEach((row) => {
+        const order = {
+          ...row,
+          id: row.id,
+          user_id: String(row.user_id),
+          price: row.price !== null ? Number(row.price) : null,
+          size: Number(row.size),
+          filled: Number(row.filled),
+        };
+        this.orders.set(order.id, order);
+      });
+
+      const trades = await this.db.query('SELECT * FROM trades ORDER BY timestamp');
+      this.trades = trades.rows.map((row) => ({
+        ...row,
+        id: row.id,
+        price: Number(row.price),
+        size: Number(row.size),
+        timestamp_ms: this.normalizeTimestampMs(row.timestamp),
+      }));
+      trades.rows.forEach((row) => {
+        const symbol = row.symbol;
+        if (!this.marketTrades[symbol]) this.marketTrades[symbol] = [];
+        this.marketTrades[symbol].push({
+          ...row,
+          id: row.id,
+          price: Number(row.price),
+          size: Number(row.size),
+          timestamp_ms: this.normalizeTimestampMs(row.timestamp),
+        });
+      });
+
+      const deposits = await this.db.query('SELECT * FROM deposits');
+      this.deposits = deposits.rows.map((row) => ({ ...row, user_id: row.user_id ? String(row.user_id) : null }));
+
+      const withdrawals = await this.db.query('SELECT * FROM withdrawals');
+      this.withdrawals = withdrawals.rows.map((row) => ({ ...row, user_id: row.user_id ? String(row.user_id) : null }));
+
+      this.updateOrderbookSnapshotForAll();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to load data from database, falling back to in-memory seed', error.message);
+    }
   }
 
   seedMarketData() {
@@ -161,6 +237,16 @@ class DataStore {
     const user = { id, email, created_at };
     this.users.set(id, user);
     config.assets.forEach((asset) => this.setBalance(id, asset, 0n));
+
+    if (this.db) {
+      this.db
+        .query('INSERT INTO users (id, email, created_at) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING', [
+          Number(id),
+          email,
+          created_at,
+        ])
+        .catch((error) => console.error('Failed to persist user', error.message));
+    }
     return user;
   }
 
@@ -184,6 +270,19 @@ class DataStore {
       available,
       updated_at: new Date().toISOString(),
     });
+
+    if (this.db) {
+      const totalDisplay = toDisplay(total);
+      const availableDisplay = toDisplay(available);
+      this.db
+        .query(
+          `INSERT INTO balances (user_id, currency, total, available, updated_at)
+           VALUES ($1, $2, $3, $4, NOW())
+           ON CONFLICT (user_id, currency) DO UPDATE SET total = EXCLUDED.total, available = EXCLUDED.available, updated_at = NOW()`,
+          [userId, currency, totalDisplay, availableDisplay]
+        )
+        .catch((error) => console.error('Failed to persist balance', error.message));
+    }
   }
 
   getBalance(userId, currency) {
@@ -396,8 +495,36 @@ class DataStore {
 
     this.orders.set(id, order);
     this.idempotency.set(idempotencyKey, id);
+    this.persistOrder(order);
     this.queueOrder(order);
     return this.orders.get(id);
+  }
+
+  persistOrder(order) {
+    if (!this.db || !order) return;
+    this.db
+      .query(
+        `INSERT INTO orders (id, user_id, symbol, side, type, price, size, filled, status, fee, fee_coin, fee_structure, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT (id) DO UPDATE SET filled = EXCLUDED.filled, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at`,
+        [
+          order.id,
+          Number(order.user_id),
+          order.symbol,
+          order.side,
+          order.type,
+          order.price,
+          order.size,
+          order.filled,
+          order.status,
+          order.fee,
+          order.fee_coin,
+          JSON.stringify(order.fee_structure),
+          order.created_at,
+          order.updated_at,
+        ]
+      )
+      .catch((error) => console.error('Failed to persist order', error.message));
   }
 
   queueOrder(order) {
@@ -508,6 +635,8 @@ class DataStore {
 
     this.orders.set(taker.id, { ...taker });
     this.orders.set(maker.id, { ...maker });
+    this.persistOrder(taker);
+    this.persistOrder(maker);
     this.updateOrderbookSnapshot(market.symbol);
   }
 
@@ -582,6 +711,7 @@ class DataStore {
 
     const updated = { ...order, status: 'cancelled', updated_at: now };
     this.orders.set(orderId, updated);
+    this.persistOrder(updated);
     this.pruneBooks(order.symbol);
     this.updateOrderbookSnapshot(order.symbol);
     return updated;
@@ -630,6 +760,15 @@ class DataStore {
     this.trades.push(trade);
     if (!this.marketTrades[symbol]) this.marketTrades[symbol] = [];
     this.marketTrades[symbol].push(trade);
+
+    if (this.db) {
+      this.db
+        .query(
+          'INSERT INTO trades (id, symbol, side, price, size, timestamp) VALUES ($1, $2, $3, $4, $5, to_timestamp($6 / 1000.0))',
+          [trade.id, trade.symbol, trade.side, trade.price, trade.size, trade.timestamp_ms]
+        )
+        .catch((error) => console.error('Failed to persist trade', error.message));
+    }
     return trade;
   }
 
@@ -733,6 +872,14 @@ class DataStore {
       ...payload,
     };
     this.deposits.push(deposit);
+    if (this.db) {
+      this.db
+        .query(
+          'INSERT INTO deposits (id, user_id, currency, amount, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $6)',
+          [deposit.id, deposit.user_id ? Number(deposit.user_id) : null, deposit.currency, deposit.amount, deposit.status, deposit.created_at]
+        )
+        .catch((error) => console.error('Failed to persist deposit', error.message));
+    }
     return deposit;
   }
 
@@ -744,6 +891,14 @@ class DataStore {
       ...payload,
     };
     this.withdrawals.push(withdrawal);
+    if (this.db) {
+      this.db
+        .query(
+          'INSERT INTO withdrawals (id, user_id, currency, amount, address, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)',
+          [withdrawal.id, withdrawal.user_id ? Number(withdrawal.user_id) : null, withdrawal.currency, withdrawal.amount, withdrawal.address, withdrawal.status, withdrawal.created_at]
+        )
+        .catch((error) => console.error('Failed to persist withdrawal', error.message));
+    }
     return withdrawal;
   }
 
@@ -760,6 +915,11 @@ class DataStore {
     if (!item) return null;
     item.status = status;
     item.updated_at = new Date().toISOString();
+    if (this.db) {
+      this.db
+        .query('UPDATE withdrawals SET status = $1, updated_at = NOW() WHERE id = $2', [status, withdrawalId])
+        .catch((error) => console.error('Failed to update withdrawal', error.message));
+    }
     return item;
   }
 
