@@ -18,21 +18,16 @@ const buildServer = async () => {
   );
   app.use(authMiddleware);
 
-const store = new DataStore();
-const server = http.createServer(app);
-const websocketHub = new WebsocketHub(server, store);
-const walletService = new WalletService(store);
-
-app.use('/v2', buildRoutes(store, websocketHub, walletService));
-
+  const store = new DataStore();
+  const walletService = new WalletService(store);
   const server = http.createServer(app);
   const websocketHub = new WebsocketHub(server, store);
 
-  app.use('/v2', buildRoutes(store, websocketHub));
+  app.use('/v2', buildRoutes(store, websocketHub, walletService));
 
   app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
 
-  return { app, server, websocketHub, store };
+  return { app, server, websocketHub, store, walletService };
 };
 
 if (require.main === module) {
