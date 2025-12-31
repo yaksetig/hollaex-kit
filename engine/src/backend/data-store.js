@@ -414,6 +414,30 @@ class DataStore {
     return this.updateBalance(userId, currency, { deltaTotal: -amount, deltaAvailable: -amount });
   }
 
+  guardedDebit(userId, currency, amountAtomic) {
+    const amount = BigInt(amountAtomic || 0);
+
+    const current = this.ensureBalance(userId, currency);
+
+    if (amount <= 0n) {
+      throw new Error('Debit amount must be greater than zero');
+    }
+
+    if (BigInt(current.available) < amount) {
+      const requested = toDisplay(amount);
+      const available = toDisplay(current.available);
+      throw new Error(
+        `Insufficient available ${currency} balance: requested ${requested}, available ${available}`
+      );
+    }
+
+    if (BigInt(current.total) - amount < 0n) {
+      throw new Error(`Cannot debit ${currency}; resulting total would be negative`);
+    }
+
+    return this.debit(userId, currency, amount);
+  }
+
   release(userId, currency, amountAtomic) {
     const amount = BigInt(amountAtomic || 0);
     return this.updateBalance(userId, currency, { deltaAvailable: amount });
