@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const { requireAuth, requirePermission, hasPermission, issueJwt } = require('./auth');
 const config = require('./config');
@@ -37,6 +38,35 @@ const buildRoutes = (store, hub, walletService) => {
       throw new Error('Can only update one parameter');
     }
     return enabled.length ? enabled[0][0] : null;
+  };
+
+  const timingSafeEqual = (a, b) => {
+    const aBuf = Buffer.from(a, 'utf8');
+    const bBuf = Buffer.from(b, 'utf8');
+    if (aBuf.length !== bBuf.length) return false;
+    return crypto.timingSafeEqual(aBuf, bBuf);
+  };
+
+  const isWebhookSecretValid = (req) => {
+    if (!config.webhooks.walletSecret) return false;
+    const provided = req.headers[config.webhooks.walletSecretHeader];
+    if (!provided) return false;
+    return timingSafeEqual(provided, config.webhooks.walletSecret);
+  };
+
+  const isWebhookSignatureValid = (req) => {
+    if (!config.webhooks.walletSecret) return false;
+    const signature = req.headers[config.webhooks.walletSignatureHeader];
+    if (!signature) return false;
+    const payload = req.rawBody || JSON.stringify(req.body || {});
+    const computed = crypto.createHmac('sha256', config.webhooks.walletSecret).update(payload).digest('hex');
+    return timingSafeEqual(signature, computed);
+  };
+
+  const requireWalletWebhookAuth = (req, res, next) => {
+    if (isWebhookSecretValid(req) || isWebhookSignatureValid(req)) return next();
+    if (req.auth && hasPermission(req.auth, 'admin')) return next();
+    return res.status(401).json({ message: 'Unauthorized webhook request' });
   };
 
   router.get('/network/init/:activation_code', (req, res) => {
@@ -465,7 +495,7 @@ const buildRoutes = (store, hub, walletService) => {
     res.json(store.listWithdrawals(req.query));
   });
 
-  router.post('/network/:exchange_id/wallet/webhook', (req, res) => {
+  router.post('/network/:exchange_id/wallet/webhook', requireWalletWebhookAuth, (req, res) => {
     const { type, data } = req.body || {};
     if (!type || !data) return res.status(400).json({ message: 'missing webhook payload' });
 

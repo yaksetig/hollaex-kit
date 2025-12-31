@@ -75,6 +75,11 @@ module.exports = {
         }, {})
       : { usdt: '10000', xht: '100' },
   },
+  webhooks: {
+    walletSecret: env.WALLET_WEBHOOK_SECRET,
+    walletSecretHeader: (env.WALLET_WEBHOOK_SECRET_HEADER || 'x-webhook-secret').toLowerCase(),
+    walletSignatureHeader: (env.WALLET_WEBHOOK_SIGNATURE_HEADER || 'x-webhook-signature').toLowerCase(),
+  },
   decimal: {
     scale: DEFAULT_SCALE,
     multiplier: MULTIPLIER,
