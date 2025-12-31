@@ -20,12 +20,8 @@ const buildServer = async () => {
   );
   app.use(authMiddleware);
 
-  const db = new Database();
-  await initialize(db.pool);
-
-  const store = new DataStore(db);
-  await store.initialize();
-
+  const store = new DataStore();
+  const walletService = new WalletService(store);
   const server = http.createServer(app);
   const websocketHub = new WebsocketHub(server, store);
   const walletService = new WalletService(store);
@@ -34,7 +30,7 @@ const buildServer = async () => {
 
   app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
 
-  return { app, server, websocketHub, store, db };
+  return { app, server, websocketHub, store, walletService };
 };
 
 if (require.main === module) {
