@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
+const Decimal = require('decimal.js');
 const config = require('./config');
-const { toAtomic, toDisplay, addAtomic, subtractAtomic, multiplyAtomic } = require('./amounts');
+const { toAtomic, toDisplay, multiplyAtomic } = require('./amounts');
 
 class DataStore {
   constructor() {
@@ -11,6 +12,9 @@ class DataStore {
     this.users = new Map();
     this.balances = new Map();
     this.orders = new Map();
+    this.holds = new Map();
+    this.holdsByRef = new Map();
+    this.ledgerEntries = [];
     this.trades = [];
     this.deposits = [];
     this.withdrawals = [];
@@ -94,12 +98,23 @@ class DataStore {
   }
 
   setBalance(userId, currency, totalAtomic, availableAtomic = totalAtomic) {
+    const total = BigInt(totalAtomic);
+    const available = BigInt(availableAtomic);
+
+    if (total < 0n || available < 0n) {
+      throw new Error('Balance cannot be negative');
+    }
+
+    if (available > total) {
+      throw new Error('Available balance cannot exceed total balance');
+    }
+
     const key = `${userId}:${currency}`;
     this.balances.set(key, {
       user_id: String(userId),
       currency,
-      total: BigInt(totalAtomic),
-      available: BigInt(availableAtomic),
+      total,
+      available,
       updated_at: new Date().toISOString(),
     });
   }
@@ -107,6 +122,13 @@ class DataStore {
   getBalance(userId, currency) {
     const key = `${userId}:${currency}`;
     return this.balances.get(key);
+  }
+
+  ensureBalance(userId, currency) {
+    const existing = this.getBalance(userId, currency);
+    if (existing) return existing;
+    this.setBalance(userId, currency, 0n, 0n);
+    return this.getBalance(userId, currency);
   }
 
   getWalletSummary(userId) {
@@ -124,81 +146,171 @@ class DataStore {
     return summary;
   }
 
-  credit(userId, currency, amountAtomic) {
-    const current = this.getBalance(userId, currency) || {
-      total: 0n,
-      available: 0n,
-      updated_at: new Date().toISOString(),
-    };
-    const total = addAtomic(current.total, amountAtomic);
-    const available = addAtomic(current.available, amountAtomic);
-    this.setBalance(userId, currency, total, available);
+  updateBalance(userId, currency, { deltaTotal = 0n, deltaAvailable = 0n }) {
+    const current = this.ensureBalance(userId, currency);
+    const newTotal = BigInt(current.total) + BigInt(deltaTotal);
+    const newAvailable = BigInt(current.available) + BigInt(deltaAvailable);
+
+    this.setBalance(userId, currency, newTotal, newAvailable);
     return this.getBalance(userId, currency);
   }
 
-  hold(userId, currency, amountAtomic) {
-    const current = this.getBalance(userId, currency) || {
-      total: 0n,
-      available: 0n,
-      updated_at: new Date().toISOString(),
-    };
-    const available = subtractAtomic(current.available, amountAtomic);
-    this.setBalance(userId, currency, current.total, available);
-    return this.getBalance(userId, currency);
+  credit(userId, currency, amountAtomic) {
+    const amount = BigInt(amountAtomic || 0);
+    return this.updateBalance(userId, currency, { deltaTotal: amount, deltaAvailable: amount });
+  }
+
+  debit(userId, currency, amountAtomic) {
+    const amount = BigInt(amountAtomic || 0);
+    return this.updateBalance(userId, currency, { deltaTotal: -amount, deltaAvailable: -amount });
   }
 
   release(userId, currency, amountAtomic) {
-    const current = this.getBalance(userId, currency) || {
-      total: 0n,
-      available: 0n,
+    const amount = BigInt(amountAtomic || 0);
+    return this.updateBalance(userId, currency, { deltaAvailable: amount });
+  }
+
+  createHold(userId, currency, amountAtomic, ref_type, ref_id) {
+    const amount = BigInt(amountAtomic || 0);
+    if (amount <= 0n) {
+      throw new Error('Hold amount must be greater than zero');
+    }
+
+    const balance = this.updateBalance(userId, currency, { deltaAvailable: -amount });
+    const hold = {
+      id: uuidv4(),
+      user_id: String(userId),
+      currency,
+      amount,
+      remaining: amount,
+      ref_type,
+      ref_id,
+      created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const available = addAtomic(current.available, amountAtomic);
-    this.setBalance(userId, currency, current.total, available);
-    return this.getBalance(userId, currency);
+    this.holds.set(hold.id, hold);
+    if (ref_type && ref_id) {
+      this.holdsByRef.set(`${ref_type}:${ref_id}`, hold.id);
+    }
+    return { hold, balance };
+  }
+
+  releaseHold(holdId) {
+    const hold = this.holds.get(holdId);
+    if (!hold || hold.remaining <= 0n) return hold || null;
+
+    this.updateBalance(hold.user_id, hold.currency, { deltaAvailable: hold.remaining });
+    hold.remaining = 0n;
+    hold.updated_at = new Date().toISOString();
+    hold.released_at = hold.updated_at;
+    return hold;
+  }
+
+  findHoldByReference(ref_type, ref_id) {
+    const holdId = this.holdsByRef.get(`${ref_type}:${ref_id}`);
+    return holdId ? this.holds.get(holdId) : null;
+  }
+
+  addLedgerEntry(entry) {
+    this.ledgerEntries.push(entry);
   }
 
   createOrder(payload) {
-    const { user_id, symbol, side, size, type, price, client_order_id } = payload;
-    const idempotencyKey = client_order_id || `${user_id}:${symbol}:${side}:${type}:${price}:${size}`;
+    const { user_id, symbol, side, size, type, price, client_order_id, quote_cap } = payload;
+    const idempotencyKey = client_order_id || `${user_id}:${symbol}:${side}:${type}:${price}:${size}:${quote_cap}`;
 
     if (this.idempotency.has(idempotencyKey)) {
       return this.orders.get(this.idempotency.get(idempotencyKey));
     }
 
+    const market = config.markets.find((m) => m.symbol === symbol);
+    if (!market) {
+      throw new Error('Market not found');
+    }
+
+    const normalizedSide = side?.toLowerCase();
+    const normalizedType = type?.toLowerCase();
+    if (!['buy', 'sell'].includes(normalizedSide)) {
+      throw new Error('Invalid side');
+    }
+
+    if (!['limit', 'market'].includes(normalizedType)) {
+      throw new Error('Invalid order type');
+    }
+
+    if (size === undefined || size === null) {
+      throw new Error('size is required');
+    }
+
+    const sizeDec = new Decimal(size);
+    const incrementSize = new Decimal(market.increment_size || '0');
+    if (!sizeDec.isPositive()) {
+      throw new Error('Size must be greater than zero');
+    }
+    if (incrementSize.gt(0) && (sizeDec.lt(incrementSize) || !sizeDec.mod(incrementSize).eq(0))) {
+      throw new Error('Size must align with market increment_size');
+    }
+
+    let priceAtomic = null;
+    if (normalizedType === 'limit') {
+      if (price === undefined || price === null) {
+        throw new Error('price is required for limit orders');
+      }
+      const priceDec = new Decimal(price);
+      const incrementPrice = new Decimal(market.increment_price || '0');
+      if (!priceDec.isPositive()) {
+        throw new Error('Price must be greater than zero');
+      }
+      if (incrementPrice.gt(0) && !priceDec.mod(incrementPrice).eq(0)) {
+        throw new Error('Price must align with market increment_price');
+      }
+      priceAtomic = toAtomic(price);
+    }
+
+    let holdCurrency;
+    let holdAmountAtomic;
+
+    if (normalizedSide === 'buy') {
+      holdCurrency = market.quote;
+      if (normalizedType === 'market') {
+        if (quote_cap === undefined || quote_cap === null) {
+          throw new Error('quote_cap is required for market buy orders');
+        }
+        holdAmountAtomic = toAtomic(quote_cap);
+      } else {
+        holdAmountAtomic = multiplyAtomic(priceAtomic, sizeDec.toString());
+      }
+    } else {
+      holdCurrency = market.base;
+      holdAmountAtomic = toAtomic(sizeDec.toString());
+    }
+
     const now = new Date().toISOString();
     const id = uuidv4();
-    const sizeAtomic = toAtomic(size);
-    const priceAtomic = toAtomic(price);
     const fee = '0';
+
+    const { hold } = this.createHold(user_id, holdCurrency, holdAmountAtomic, 'order', id);
 
     const order = {
       id,
       user_id: String(user_id),
       symbol,
-      side,
-      type,
-      price: price ? Number(price) : null,
+      side: normalizedSide,
+      type: normalizedType,
+      price: price !== undefined && price !== null ? Number(price) : null,
       size: Number(size),
+      quote_cap: quote_cap !== undefined && quote_cap !== null ? Number(quote_cap) : null,
       filled: 0,
-      status: 'open',
+      status: 'new',
       fee,
       fee_coin: symbol.split('-')[1],
       fee_structure: { maker: 0, taker: 0 },
       created_at: now,
       updated_at: now,
       client_order_id: client_order_id || null,
+      hold_id: hold.id,
+      hold_amount: hold.amount,
     };
-
-    const market = config.markets.find((m) => m.symbol === symbol);
-    if (market) {
-      if (side === 'buy') {
-        const totalCost = multiplyAtomic(priceAtomic, size);
-        this.hold(user_id, market.quote, totalCost);
-      } else {
-        this.hold(user_id, market.base, sizeAtomic);
-      }
-    }
 
     this.orders.set(id, order);
     this.idempotency.set(idempotencyKey, id);
@@ -207,24 +319,15 @@ class DataStore {
 
   cancelOrder(userId, orderId) {
     const order = this.orders.get(orderId);
-    if (!order) return null;
+    if (!order || order.user_id !== String(userId)) return null;
     const now = new Date().toISOString();
 
     if (order.status === 'cancelled') {
       return order;
     }
 
-    const market = config.markets.find((m) => m.symbol === order.symbol);
-    if (market) {
-      if (order.side === 'buy') {
-        const priceAtomic = toAtomic(order.price || 0);
-        const sizeAtomic = toAtomic(order.size);
-        const holdAmount = multiplyAtomic(priceAtomic, order.size);
-        this.release(userId, market.quote, holdAmount);
-      } else {
-        const sizeAtomic = toAtomic(order.size);
-        this.release(userId, market.base, sizeAtomic);
-      }
+    if (order.hold_id) {
+      this.releaseHold(order.hold_id);
     }
 
     const updated = { ...order, status: 'cancelled', updated_at: now };
