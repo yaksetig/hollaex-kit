@@ -10,6 +10,9 @@ const { Database } = require('./db');
 const { initialize } = require('./startup');
 
 const buildServer = async () => {
+  const db = new Database();
+  await initialize();
+
   const app = express();
   app.use(
     express.json({
@@ -20,8 +23,8 @@ const buildServer = async () => {
   );
   app.use(authMiddleware);
 
-  const store = new DataStore();
-  const walletService = new WalletService(store);
+  const store = new DataStore(db);
+  await store.initialize();
   const server = http.createServer(app);
   const websocketHub = new WebsocketHub(server, store);
   const walletService = new WalletService(store);
@@ -30,7 +33,7 @@ const buildServer = async () => {
 
   app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
 
-  return { app, server, websocketHub, store, walletService };
+  return { app, server, websocketHub, store, walletService, db };
 };
 
 if (require.main === module) {
