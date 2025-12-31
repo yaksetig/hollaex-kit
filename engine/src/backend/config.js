@@ -21,6 +21,15 @@ module.exports = {
   server: {
     port: Number(env.CUSTOM_NETWORK_PORT || env.PORT || 3003),
   },
+  db: {
+    host: env.DB_HOST || env.POSTGRES_HOST || 'postgres',
+    port: Number(env.DB_PORT || env.POSTGRES_PORT || 5432),
+    database: env.DB_NAME || env.POSTGRES_DB || 'hollaex',
+    user: env.DB_USER || env.POSTGRES_USER || 'hollaex',
+    password: env.DB_PASSWORD || env.POSTGRES_PASSWORD || 'hollaex',
+    ssl: env.DB_SSL === 'true',
+    connectionString: env.DATABASE_URL,
+  },
   exchange: {
     id: env.EXCHANGE_ID || 'custom-network',
     name: env.EXCHANGE_NAME || 'Custom Network Backend',

@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS balances (
   currency TEXT NOT NULL,
   total NUMERIC(32,8) DEFAULT 0,
   available NUMERIC(32,8) DEFAULT 0,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, currency)
 );
 
 CREATE TABLE IF NOT EXISTS orders (

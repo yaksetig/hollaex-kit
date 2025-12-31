@@ -7,15 +7,16 @@ const { buildRoutes } = require('./routes');
 const { WebsocketHub } = require('./websocket');
 const { WalletService } = require('./wallet-service');
 
-const app = express();
-app.use(
-  express.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf.toString();
-    },
-  })
-);
-app.use(authMiddleware);
+const buildServer = async () => {
+  const app = express();
+  app.use(
+    express.json({
+      verify: (req, res, buf) => {
+        req.rawBody = buf.toString();
+      },
+    })
+  );
+  app.use(authMiddleware);
 
 const store = new DataStore();
 const server = http.createServer(app);
@@ -24,13 +25,23 @@ const walletService = new WalletService(store);
 
 app.use('/v2', buildRoutes(store, websocketHub, walletService));
 
-app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
+  const server = http.createServer(app);
+  const websocketHub = new WebsocketHub(server, store);
+
+  app.use('/v2', buildRoutes(store, websocketHub));
+
+  app.get('/health', (req, res) => res.json({ status: 'ok', exchange_id: config.exchange.id }));
+
+  return { app, server, websocketHub, store };
+};
 
 if (require.main === module) {
-  server.listen(config.server.port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`Custom network backend listening on ${config.server.port}`);
+  buildServer().then(({ server }) => {
+    server.listen(config.server.port, () => {
+      // eslint-disable-next-line no-console
+      console.log(`Custom network backend listening on ${config.server.port}`);
+    });
   });
 }
 
-module.exports = { app, server, websocketHub, store };
+module.exports = { buildServer };
