@@ -2,7 +2,7 @@ const express = require('express');
 const { requireAuth } = require('./auth');
 const config = require('./config');
 const { Ledger } = require('./ledger');
-const { toDisplay } = require('./amounts');
+const { toDisplay, toAtomic } = require('./amounts');
 
 const buildChartResponse = (from, to) => {
   const t = [Number(from), Number(to)];
@@ -183,10 +183,14 @@ const buildRoutes = (store, hub) => {
   router.post('/network/:exchange_id/order', requireAuth, (req, res) => {
     const { user_id } = req.query;
     if (!user_id) return res.status(400).json({ message: 'user_id is required' });
-    const order = store.createOrder({ user_id, ...req.body });
-    hub.publishOrder(user_id);
-    hub.publishWallet(user_id);
-    res.status(201).json(order);
+    try {
+      const order = store.createOrder({ user_id, ...req.body });
+      hub.publishOrder(user_id);
+      hub.publishWallet(user_id);
+      res.status(201).json(order);
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   router.delete('/network/:exchange_id/order', requireAuth, (req, res) => {
@@ -221,17 +225,25 @@ const buildRoutes = (store, hub) => {
   router.post('/network/:exchange_id/mint', requireAuth, (req, res) => {
     const { user_id, currency, amount } = req.body;
     if (!user_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
-    const entry = ledger.recordEntry({ user_id, currency, change: amount, reference: 'mint' });
-    hub.publishWallet(user_id);
-    res.status(201).json(entry);
+    try {
+      const entry = ledger.recordEntry({ user_id, currency, change: amount, reference: 'mint' });
+      hub.publishWallet(user_id);
+      res.status(201).json(entry);
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   router.post('/network/:exchange_id/burn', requireAuth, (req, res) => {
     const { user_id, currency, amount } = req.body;
     if (!user_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
-    const entry = ledger.recordEntry({ user_id, currency, change: `-${amount}`, reference: 'burn' });
-    hub.publishWallet(user_id);
-    res.status(201).json(entry);
+    try {
+      const entry = ledger.recordEntry({ user_id, currency, change: `-${amount}`, reference: 'burn' });
+      hub.publishWallet(user_id);
+      res.status(201).json(entry);
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   router.get('/network/:exchange_id/fees', requireAuth, (req, res) => {
@@ -305,10 +317,17 @@ const buildRoutes = (store, hub) => {
   router.post('/network/:exchange_id/transfer', requireAuth, (req, res) => {
     const { sender_id, receiver_id, currency, amount } = req.body;
     if (!sender_id || !receiver_id || !currency || !amount) return res.status(400).json({ message: 'missing parameters' });
-    store.release(sender_id, currency, store.getBalance(sender_id, currency)?.available || 0);
-    ledger.recordEntry({ user_id: receiver_id, currency, change: amount, reference: 'transfer' });
-    hub.publishWallet(receiver_id);
-    res.json({ status: 'completed' });
+
+    const atomicAmount = toAtomic(amount);
+    try {
+      store.debit(sender_id, currency, atomicAmount);
+      store.credit(receiver_id, currency, atomicAmount);
+      hub.publishWallet(sender_id);
+      hub.publishWallet(receiver_id);
+      res.json({ status: 'completed' });
+    } catch (error) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   return router;
