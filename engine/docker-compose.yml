@@ -1,0 +1,18 @@
+version: '3.8'
+services:
+  custom-network-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - EXCHANGE_ID=custom-network
+      - EXCHANGE_NAME=Custom Network Backend
+      - EXCHANGE_ACTIVATION_CODE=dev-activation-code
+      - DEV_API_KEY=dev-api-key
+      - DEV_API_SECRET=dev-api-secret
+      - DEV_API_USER_ID=1
+      - DEV_TOKENS=dev-access-token
+    command: npm start

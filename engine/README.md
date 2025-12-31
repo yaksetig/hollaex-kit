@@ -10,6 +10,19 @@ This directory contains a standalone matching-engine implementation that mirrors
 - `src/persistence.js` – helpers to map runtime state into persisted representations and rebuild from snapshots.
 - `index.js` – convenience exports.
 
+### Custom Network Backend (API Shim)
+
+The `src/backend` folder contains a stub-friendly REST + WebSocket server that mirrors the surface area expected by `hollaex-network-lib`.
+It provides deterministic order creation/cancellation, fixed-point balance accounting, and immediately usable endpoints/websocket topics for Phase 1 compatibility.
+
+- `src/backend/server.js` – Express entrypoint exposing `/v2/network` routes and `/stream` websocket channel.
+- `src/backend/routes.js` – REST handlers covering the network-lib surface (tickers, orderbook, trades, orders, balances, deposits/withdrawals, udf/chart endpoints, etc.).
+- `src/backend/data-store.js` – in-memory ledger, balances, orders, trades, and idempotency cache with fixed-point arithmetic helpers.
+- `src/backend/websocket.js` – channel subscription handling for orderbook, trades, order:<userId>, and wallet:<userId> topics with partial snapshots.
+- `src/backend/tests/runTests.js` – deterministic fixture checks for idempotent order creation, cancellation, and numeric round-tripping.
+- `db/schema.sql` and `db/migrations/001_init.sql` – starter schema and migration for persisting the stubbed models when wiring to a database.
+- `Dockerfile.backend` and `docker-compose.yml` – local runtime scaffolding for the backend shim.
+
 ## Usage
 The engine is designed to be embedded in a service that exposes REST and websocket endpoints. A minimal usage example:
 
